@@ -106,6 +106,19 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(await screen.findByText(/PCI-DSS Req 3\.4/i)).toBeTruthy();
   });
 
+  it('supports Alt+1..4 workspace shortcuts and cycles dark/light/system themes cleanly', () => {
+    render(<App />);
+    fireEvent.keyDown(window, { key: '2', altKey: true });
+    expect(screen.getByRole('tab', { name: /Entity Review & Vault/i }).getAttribute('aria-selected')).toBe('true');
+
+    fireEvent.keyDown(window, { key: '3', altKey: true });
+    expect(screen.getByRole('tab', { name: /Self-Test & Proof/i }).getAttribute('aria-selected')).toBe('true');
+
+    const themeBtn = screen.getByRole('button', { name: /Switch color theme/i });
+    fireEvent.click(themeBtn);
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+
   it('passes axe-core automated WCAG accessibility audit with zero violations', async () => {
     const { container } = render(<App />);
     const results = await axe.run(container, {

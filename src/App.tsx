@@ -13,14 +13,10 @@ import { buildCloudDlpDeidentifyConfig, buildCloudDlpSummary } from './engine/dl
 import { installNetworkMonitor, NetworkMonitorState } from './engine/networkMonitor';
 import { redactText, sha256Hex } from './engine/redactor';
 import { DEFAULT_DETECTION_OPTIONS } from './engine/scanner';
-import { SAMPLE_DATASETS } from './engine/samples';
 import { runAdversarialSelfTest, SelfTestReport } from './engine/selfTest';
 import type { SafeScanSummary } from './services/geminiAdvisor';
 import { DetectionOptions, PiiCategory, RedactionMode, RedactionResult } from './types/pii';
 import type { SanitizedCsvBundle, WorkerScanRequest, WorkerScanResponse } from './workers/scanner.worker';
-
-const _unusedSampleCheck = SAMPLE_DATASETS.length;
-void _unusedSampleCheck;
 
 const WORKER_OFFLOAD_CHARS = 8_000;
 

@@ -155,6 +155,10 @@ describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
     expect(restored[0].sampleValue).toBe('aarav@corp.in');
 
     await expect(decryptPseudonymLedger(bundle, 'wrong-pass-2026')).rejects.toThrow(/Decryption failed/);
+
+    // Tampering with AAD-bound metadata must also fail AES-GCM authentication
+    const tamperedBundle = { ...bundle, createdAt: '2099-01-01T00:00:00.000Z' };
+    await expect(decryptPseudonymLedger(tamperedBundle, 'strong-pass-2026')).rejects.toThrow(/Decryption failed/);
   });
 
   it('maps detected counts to Google Cloud DLP InfoTypes and DeidentifyConfig cleanly', () => {
