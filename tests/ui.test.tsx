@@ -119,14 +119,20 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
   });
 
-  it('passes axe-core automated WCAG accessibility audit with zero violations', async () => {
+  it('passes axe-core automated WCAG accessibility audit with zero violations across workspace tabs', async () => {
     const { container } = render(<App />);
-    const results = await axe.run(container, {
-      rules: {
-        // jsdom does not render full CSS layout/contrast computation
-        'color-contrast': { enabled: false },
-      },
-    });
-    expect(results.violations).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: /Try Demo Data/i }));
+    fireEvent.click(screen.getByRole('button', { name: /FinTech Incident Log/i }));
+
+    for (const tabRegex of [/Sanitize Studio/i, /Entity Review & Vault/i, /Self-Test & Proof/i, /Compliance Advisor/i]) {
+      fireEvent.click(screen.getByRole('tab', { name: tabRegex }));
+      const results = await axe.run(container, {
+        rules: {
+          // jsdom does not render full CSS layout/contrast computation
+          'color-contrast': { enabled: false },
+        },
+      });
+      expect(results.violations).toEqual([]);
+    }
   });
 });
