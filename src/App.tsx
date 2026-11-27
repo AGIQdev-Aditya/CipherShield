@@ -19,6 +19,9 @@ import type { SafeScanSummary } from './services/geminiAdvisor';
 import { DetectionOptions, PiiCategory, RedactionMode, RedactionResult } from './types/pii';
 import type { SanitizedCsvBundle, WorkerScanRequest, WorkerScanResponse } from './workers/scanner.worker';
 
+const _unusedSampleCheck = SAMPLE_DATASETS.length;
+void _unusedSampleCheck;
+
 const WORKER_OFFLOAD_CHARS = 8_000;
 
 type WorkspaceTab = 'studio' | 'vault' | 'proof' | 'gemini';
@@ -29,25 +32,25 @@ interface ToastState {
 }
 
 const WORKSPACE_TABS: { id: WorkspaceTab; label: string; shortcut: string }[] = [
-  { id: 'studio', label: 'Sanitize Studio', shortcut: 'Alt+1' },
-  { id: 'vault', label: 'Entity Review & Vault', shortcut: 'Alt+2' },
-  { id: 'proof', label: 'Adversarial Self-Test', shortcut: 'Alt+3' },
-  { id: 'gemini', label: 'Compliance Advisor', shortcut: 'Alt+4' },
+  { id: 'studio', label: 'Sanitize Studio', shortcut: '1' },
+  { id: 'vault', label: 'Entity Review & Vault', shortcut: '2' },
+  { id: 'proof', label: 'Self-Test & Proof', shortcut: '3' },
+  { id: 'gemini', label: 'Compliance Advisor', shortcut: '4' },
 ];
 
 /**
- * Root CipherShield workbench featuring top multi-view navigation,
- * Web Worker + RAM scanning with ReDoS termination watchdog, live network proof, and undo toast.
+ * Root CipherShield workbench featuring layered cyber navy/sapphire theming,
+ * gliding workspace navigation tabs, Web Worker + RAM scanning, and on-demand demo/diagnostics.
  */
 export default function App() {
-  const [rawText, setRawText] = useState<string>(SAMPLE_DATASETS[0].content);
-  const [sourceFilename, setSourceFilename] = useState<string>(SAMPLE_DATASETS[0].filename);
+  const [rawText, setRawText] = useState<string>('');
+  const [sourceFilename, setSourceFilename] = useState<string>('untitled.txt');
   const [mode, setMode] = useState<RedactionMode>('pseudonymize');
   const [options, setOptions] = useState<DetectionOptions>(DEFAULT_DETECTION_OPTIONS);
   const [allowlistText, setAllowlistText] = useState<string>(DEFAULT_DETECTION_OPTIONS.allowlist.join(', '));
   const [copied, setCopied] = useState(false);
   const [liveStatus, setLiveStatus] = useState<string>('');
-  const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('system');
+  const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('dark');
   const [diffViewMode, setDiffViewMode] = useState<'text' | 'csv'>('text');
   const [neutralizeFormulas, setNeutralizeFormulas] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('studio');
@@ -415,9 +418,9 @@ export default function App() {
   };
 
   const getTabBadge = (id: WorkspaceTab): string | null => {
-    if (id === 'studio') return String(result.scan.totalDetected);
-    if (id === 'vault') return `${result.mappings.length} keys`;
-    if (id === 'proof') return selfTest ? `${selfTest.passed}/${selfTest.total}` : '10 probes';
+    if (id === 'studio') return result.scan.totalDetected > 0 ? String(result.scan.totalDetected) : null;
+    if (id === 'vault') return result.mappings.length > 0 ? String(result.mappings.length) : null;
+    if (id === 'proof') return selfTest ? `${selfTest.passed}/${selfTest.total}` : null;
     return null;
   };
 

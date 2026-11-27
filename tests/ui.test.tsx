@@ -21,6 +21,8 @@ describe('CipherShield UI, Security & Accessibility', () => {
 
   it('safely renders XSS probe strings as plain text without injecting script nodes', () => {
     const { container } = render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Try Demo Data/i }));
+    fireEvent.click(screen.getByRole('button', { name: /FinTech Incident Log/i }));
     expect(container.querySelectorAll('script').length).toBe(0);
     const pre = screen.getByLabelText('Sanitized output preview');
     expect(pre.textContent).toContain("<script>alert('xss_test')</script>");
@@ -28,6 +30,8 @@ describe('CipherShield UI, Security & Accessibility', () => {
 
   it('switches redaction modes cleanly on click and keyboard ArrowRight', () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Try Demo Data/i }));
+    fireEvent.click(screen.getByRole('button', { name: /FinTech Incident Log/i }));
     const fullMaskTab = screen.getByRole('tab', { name: 'Full Mask' });
     fireEvent.click(fullMaskTab);
     expect(fullMaskTab.getAttribute('aria-selected')).toBe('true');
@@ -41,6 +45,7 @@ describe('CipherShield UI, Security & Accessibility', () => {
 
   it('activates structured CSV Column Diff when HR Payroll CSV is loaded', () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Try Demo Data/i }));
     fireEvent.click(screen.getByRole('button', { name: /HR Payroll CSV/i }));
     expect(screen.getByText(/CSV Original vs. Sanitized Cell Comparison/i)).toBeTruthy();
   });
@@ -61,6 +66,8 @@ describe('CipherShield UI, Security & Accessibility', () => {
 
   it('toggles category filters and live allowlist exclusions', () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Try Demo Data/i }));
+    fireEvent.click(screen.getByRole('button', { name: /FinTech Incident Log/i }));
     const emailBtn = screen.getByRole('button', { name: /Emails/i });
     expect(emailBtn.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(emailBtn);
@@ -74,6 +81,8 @@ describe('CipherShield UI, Security & Accessibility', () => {
 
   it('lets users inspect detected items, keep/undo originals, toggle network proof log, run self-tests, and generate offline briefs', async () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Try Demo Data/i }));
+    fireEvent.click(screen.getByRole('button', { name: /FinTech Incident Log/i }));
 
     // Toggle expandable Zero-Egress network proof log from navigation bar
     fireEvent.click(screen.getByRole('button', { name: /0 External Egress/i }));
@@ -87,9 +96,8 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(screen.getByLabelText('Kept / Allowlisted items').textContent).toContain('aarav.kulkarni@fintech-corp.in');
     expect(screen.getByRole('status').textContent).toContain('aarav.kulkarni@fintech-corp.in');
 
-    // Switch to Adversarial Self-Test tab & execute 10 probes
-    fireEvent.click(screen.getByRole('tab', { name: /Adversarial Self-Test/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Run 10-Case Adversarial Self-Test/i }));
+    // Switch to Self-Test & Proof tab & verify live proof executes cleanly
+    fireEvent.click(screen.getByRole('tab', { name: /Self-Test & Proof/i }));
     expect(await screen.findByText(/Live Adversarial Proof: 10\/10 Passed/i)).toBeTruthy();
 
     // Switch to Compliance Advisor tab & generate offline DPDP/PCI brief

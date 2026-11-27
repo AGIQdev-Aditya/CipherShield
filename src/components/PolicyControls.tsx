@@ -53,12 +53,16 @@ export function PolicyControls({
               key={item.id}
               type="button"
               role="tab"
+              aria-label={item.label}
               aria-selected={mode === item.id}
               className="mode-tab"
               onClick={() => onChangeMode(item.id)}
               onKeyDown={(e) => handleModeKeyDown(e, idx)}
             >
-              {item.label}
+              <span>{item.label}</span>
+              <kbd className="keycap keycap-inline" aria-hidden="true">
+                {idx + 1}
+              </kbd>
             </button>
           ))}
         </div>

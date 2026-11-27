@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { Shuffle, Sparkles, Trash2, Upload } from 'lucide-react';
+import { ChevronDown, Shuffle, Sparkles, Trash2, Upload } from 'lucide-react';
 import { generateSyntheticChaosLog, SAMPLE_DATASETS } from '../engine/samples';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -25,9 +25,11 @@ export function SourceInputPanel({
   onClear,
 }: SourceInputPanelProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [showDemos, setShowDemos] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const rawInputId = useId();
   const uploadInputId = useId();
+  const demoDrawerId = useId();
 
   const handleFileLoad = async (file: File | undefined) => {
     setUploadError(null);
@@ -60,32 +62,17 @@ export function SourceInputPanel({
           1. Source Data Input
         </h2>
 
-        <div className="sample-buttons" role="group" aria-label="Sample datasets and synthetic chaos generator">
-          {SAMPLE_DATASETS.map((sample) => (
-            <button
-              key={sample.id}
-              type="button"
-              className="btn"
-              onClick={() => {
-                setUploadError(null);
-                onSelectFixture(sample.content, sample.filename, sample.filename.endsWith('.csv'));
-              }}
-            >
-              <Sparkles size={15} aria-hidden="true" />
-              {sample.label}
-            </button>
-          ))}
+        <div className="sample-buttons" role="group" aria-label="Source actions">
           <button
             type="button"
-            className="btn"
-            onClick={() => {
-              setUploadError(null);
-              onSelectFixture(generateSyntheticChaosLog(), 'synthetic_chaos_log.txt', false);
-            }}
-            title="Generate random Luhn-valid cards, decoy IDs, PAN, Aadhaar, and recurring PII offline"
+            className="btn btn-demo-trigger"
+            aria-expanded={showDemos}
+            aria-controls={demoDrawerId}
+            onClick={() => setShowDemos((v) => !v)}
           >
-            <Shuffle size={15} aria-hidden="true" />
-            Generate Fresh Chaos
+            <Sparkles size={15} aria-hidden="true" />
+            <span>Try Demo Data</span>
+            <ChevronDown size={15} className={`chevron-rot ${showDemos ? 'is-open' : ''}`} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -101,6 +88,42 @@ export function SourceInputPanel({
           </button>
         </div>
       </div>
+
+      {showDemos && (
+        <div id={demoDrawerId} className="demo-drawer" role="region" aria-label="Interactive demo presets">
+          <span className="demo-drawer-label">Load Demo Preset:</span>
+          <div className="sample-buttons">
+            {SAMPLE_DATASETS.map((sample) => (
+              <button
+                key={sample.id}
+                type="button"
+                className="btn btn-compact"
+                onClick={() => {
+                  setUploadError(null);
+                  setShowDemos(false);
+                  onSelectFixture(sample.content, sample.filename, sample.filename.endsWith('.csv'));
+                }}
+              >
+                <Sparkles size={14} aria-hidden="true" />
+                {sample.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="btn btn-compact"
+              onClick={() => {
+                setUploadError(null);
+                setShowDemos(false);
+                onSelectFixture(generateSyntheticChaosLog(), 'synthetic_chaos_log.txt', false);
+              }}
+              title="Generate random Luhn-valid cards, decoy IDs, PAN, Aadhaar, and recurring PII offline"
+            >
+              <Shuffle size={14} aria-hidden="true" />
+              Generate Fresh Chaos
+            </button>
+          </div>
+        </div>
+      )}
 
       <div
         className={`upload-zone ${isDragging ? 'is-dragging' : ''}`}
