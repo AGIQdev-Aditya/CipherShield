@@ -49,6 +49,9 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
   };
 
   const hasKey = Boolean(geminiKey.trim());
+  const dpdpHits = summary.counts.AADHAAR + summary.counts.PAN + summary.counts.UPI_ID + summary.counts.PHONE;
+  const pciHits = summary.counts.CREDIT_CARD;
+  const gdprHits = summary.counts.EMAIL + summary.counts.IP_ADDRESS + summary.counts.PHONE;
 
   return (
     <section className="panel" aria-labelledby="gemini-advisor-heading">
@@ -58,9 +61,27 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
             5. Compliance Advisor · Offline Brief &amp; Optional Gemini 3.8 Flash (Counts-Only)
           </h2>
           <p className="panel-subtitle">
-            Zero raw text or PII ever crosses the interface boundary. Generate a deterministic DPDP/PCI-DSS brief
+            Zero raw text or PII ever crosses the interface boundary. Generate a deterministic DPDP/PCI-DSS/GDPR brief
             completely offline, or enter a Gemini API key to send anonymized Cloud DLP entity counts only.
           </p>
+        </div>
+      </div>
+
+      <div className="reg-grid" aria-label="Regulatory framework impact counts">
+        <div className="reg-card">
+          <span className="stat-label">India DPDP Act / UIDAI</span>
+          <span className="stat-value mono">{dpdpHits}</span>
+          <span className="stat-sub">Aadhaar, PAN, UPI &amp; Mobile</span>
+        </div>
+        <div className="reg-card">
+          <span className="stat-label">PCI-DSS v4.0 Req 3.4</span>
+          <span className="stat-value mono">{pciHits}</span>
+          <span className="stat-sub">Luhn + IIN Payment Cards</span>
+        </div>
+        <div className="reg-card">
+          <span className="stat-label">EU GDPR Art. 4 / 32</span>
+          <span className="stat-value mono">{gdprHits}</span>
+          <span className="stat-sub">Emails, IPv4/IPv6 &amp; Phones</span>
         </div>
       </div>
 
