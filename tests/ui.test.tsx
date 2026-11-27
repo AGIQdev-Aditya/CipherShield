@@ -75,23 +75,24 @@ describe('CipherShield UI, Security & Accessibility', () => {
   it('lets users inspect detected items, keep/undo originals, toggle network proof log, run self-tests, and generate offline briefs', async () => {
     render(<App />);
 
-    // Toggle expandable Zero-Egress network proof log
-    fireEvent.click(screen.getByRole('button', { name: /Inspect network log/i }));
+    // Toggle expandable Zero-Egress network proof log from navigation bar
+    fireEvent.click(screen.getByRole('button', { name: /0 External Egress/i }));
     expect(screen.getByRole('region', { name: /Intercepted network events/i })).toBeTruthy();
 
-    // Keep Original item & verify Undo toast appears
+    // Switch to Entity Review & Vault tab, click Keep Original & verify Undo toast
+    fireEvent.click(screen.getByRole('tab', { name: /Entity Review & Vault/i }));
     const keepButtons = screen.getAllByRole('button', { name: /Keep Original/i });
     expect(keepButtons.length).toBeGreaterThan(0);
     fireEvent.click(keepButtons[0]);
     expect(screen.getByLabelText('Kept / Allowlisted items').textContent).toContain('aarav.kulkarni@fintech-corp.in');
     expect(screen.getByRole('status').textContent).toContain('aarav.kulkarni@fintech-corp.in');
 
-    // Switch drawer to Self-Test Proof & execute 10 probes
-    fireEvent.click(screen.getByRole('tab', { name: /Adversarial Self-Test Proof/i }));
+    // Switch to Adversarial Self-Test tab & execute 10 probes
+    fireEvent.click(screen.getByRole('tab', { name: /Adversarial Self-Test/i }));
     fireEvent.click(screen.getByRole('button', { name: /Run 10-Case Adversarial Self-Test/i }));
     expect(await screen.findByText(/Live Adversarial Proof: 10\/10 Passed/i)).toBeTruthy();
 
-    // Switch drawer to Compliance Advisor & generate offline DPDP/PCI brief
+    // Switch to Compliance Advisor tab & generate offline DPDP/PCI brief
     fireEvent.click(screen.getByRole('tab', { name: /Compliance Advisor/i }));
     fireEvent.click(screen.getByRole('button', { name: /Generate Offline Compliance Brief/i }));
     expect(await screen.findByText(/PCI-DSS Req 3\.4/i)).toBeTruthy();

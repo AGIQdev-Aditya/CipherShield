@@ -1,5 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { FlaskConical } from 'lucide-react';
+import { FlaskConical, KeyRound, ShieldCheck, Sparkles } from 'lucide-react';
 import { AuditLedger } from './components/AuditLedger';
 import { GeminiAdvisorPanel } from './components/GeminiAdvisorPanel';
 import { HeaderBar } from './components/HeaderBar';
@@ -21,16 +21,23 @@ import type { SanitizedCsvBundle, WorkerScanRequest, WorkerScanResponse } from '
 
 const WORKER_OFFLOAD_CHARS = 8_000;
 
-type DrawerTab = 'audit' | 'proof' | 'gemini';
+type WorkspaceTab = 'studio' | 'vault' | 'proof' | 'gemini';
 
 interface ToastState {
   message: string;
   undoAllowlist?: string;
 }
 
+const WORKSPACE_TABS: { id: WorkspaceTab; label: string; shortcut: string }[] = [
+  { id: 'studio', label: 'Sanitize Studio', shortcut: 'Alt+1' },
+  { id: 'vault', label: 'Entity Review & Vault', shortcut: 'Alt+2' },
+  { id: 'proof', label: 'Adversarial Self-Test', shortcut: 'Alt+3' },
+  { id: 'gemini', label: 'Compliance Advisor', shortcut: 'Alt+4' },
+];
+
 /**
- * Root CipherShield workspace coordinating deferred + Web Worker PII scanning,
- * live zero-egress network proof log, interactive drawer panels, undo toast, and audit exports.
+ * Root CipherShield workbench featuring top multi-view navigation,
+ * Web Worker + RAM scanning with ReDoS termination watchdog, live network proof, and undo toast.
  */
 export default function App() {
   const [rawText, setRawText] = useState<string>(SAMPLE_DATASETS[0].content);
@@ -43,7 +50,7 @@ export default function App() {
   const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('system');
   const [diffViewMode, setDiffViewMode] = useState<'text' | 'csv'>('text');
   const [neutralizeFormulas, setNeutralizeFormulas] = useState<boolean>(true);
-  const [drawer, setDrawer] = useState<DrawerTab>('audit');
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('studio');
   const [showProofLog, setShowProofLog] = useState(false);
   const [selfTest, setSelfTest] = useState<SelfTestReport | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -54,8 +61,9 @@ export default function App() {
   });
 
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const drawerRefs = useRef<Record<DrawerTab, HTMLButtonElement | null>>({
-    audit: null,
+  const tabRefs = useRef<Record<WorkspaceTab, HTMLButtonElement | null>>({
+    studio: null,
+    vault: null,
     proof: null,
     gemini: null,
   });
@@ -317,26 +325,31 @@ export default function App() {
     }));
   };
 
-  const selectDrawer = (tab: DrawerTab, focus = false) => {
-    setDrawer(tab);
-    if (focus) drawerRefs.current[tab]?.focus();
+  const selectTab = (tab: WorkspaceTab, focus = false) => {
+    setActiveTab(tab);
+    if (focus) tabRefs.current[tab]?.focus();
   };
 
-  const onDrawerKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, idx: number) => {
-    const order: DrawerTab[] = ['audit', 'proof', 'gemini'];
+  const onTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, idx: number) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft' && e.key !== 'Home' && e.key !== 'End') return;
     e.preventDefault();
     const next =
       e.key === 'Home'
         ? 0
         : e.key === 'End'
-          ? order.length - 1
-          : (idx + (e.key === 'ArrowRight' ? 1 : -1) + order.length) % order.length;
-    selectDrawer(order[next], true);
+          ? WORKSPACE_TABS.length - 1
+          : (idx + (e.key === 'ArrowRight' ? 1 : -1) + WORKSPACE_TABS.length) % WORKSPACE_TABS.length;
+    selectTab(WORKSPACE_TABS[next].id, true);
   };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && ['1', '2', '3', '4'].includes(e.key)) {
+        e.preventDefault();
+        const tab = WORKSPACE_TABS[Number(e.key) - 1];
+        if (tab) setActiveTab(tab.id);
+        return;
+      }
       const el = e.target as HTMLElement | null;
       const typing =
         !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
@@ -368,9 +381,29 @@ export default function App() {
   const egressClean = networkState.externalCallsBlockedOrLogged === 0;
   const activeCategories = Object.values(result.scan.counts).filter((n) => n > 0).length;
 
+  const getTabIcon = (id: WorkspaceTab) => {
+    switch (id) {
+      case 'studio':
+        return <ShieldCheck size={16} aria-hidden="true" />;
+      case 'vault':
+        return <KeyRound size={16} aria-hidden="true" />;
+      case 'proof':
+        return <FlaskConical size={16} aria-hidden="true" />;
+      case 'gemini':
+        return <Sparkles size={16} aria-hidden="true" />;
+    }
+  };
+
+  const getTabBadge = (id: WorkspaceTab): string | null => {
+    if (id === 'studio') return String(result.scan.totalDetected);
+    if (id === 'vault') return `${result.mappings.length} keys`;
+    if (id === 'proof') return selfTest ? `${selfTest.passed}/${selfTest.total}` : '10 probes';
+    return null;
+  };
+
   return (
     <div className="app-shell">
-      <a href="#main-heading" className="skip-link visually-hidden">
+      <a href="#main-content" className="skip-link visually-hidden">
         Skip to main content
       </a>
 
@@ -381,12 +414,78 @@ export default function App() {
         onOpenPromptLog={() => dialogRef.current?.showModal()}
       />
 
-      <main>
+      {/* Sticky Top Workspace Navigation & Live Telemetry */}
+      <nav className="workspace-nav-shell" aria-label="Workspace navigation">
+        <div className="workspace-tabs" role="tablist" aria-label="CipherShield workspace sections">
+          {WORKSPACE_TABS.map((tab, idx) => {
+            const badge = getTabBadge(tab.id);
+            const selected = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                ref={(el) => {
+                  tabRefs.current[tab.id] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`ws-tab-${tab.id}`}
+                aria-selected={selected}
+                aria-controls={`ws-panel-${tab.id}`}
+                tabIndex={selected ? 0 : -1}
+                className={`ws-tab ${selected ? 'is-active' : ''}`}
+                onClick={() => selectTab(tab.id)}
+                onKeyDown={(e) => onTabKeyDown(e, idx)}
+                title={`${tab.label} (${tab.shortcut})`}
+              >
+                {getTabIcon(tab.id)}
+                <span>{tab.label}</span>
+                {badge && <span className="drawer-count mono">{badge}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          className="btn btn-compact proof-pill-btn"
+          aria-expanded={showProofLog}
+          aria-controls="proof-log"
+          onClick={() => setShowProofLog((v) => !v)}
+        >
+          <span className={`proof-dot ${egressClean ? '' : 'is-hot'}`} aria-hidden="true" />
+          <span>{egressClean ? '0 External Egress' : `${networkState.externalCallsBlockedOrLogged} Calls`}</span>
+        </button>
+      </nav>
+
+      {showProofLog && (
+        <div className="proof-log" id="proof-log" role="region" aria-label="Intercepted network events">
+          {networkState.recentEvents.length === 0 ? (
+            <p className="muted-copy proof-empty">
+              Zero external requests intercepted across fetch, XHR, sendBeacon, and Resource observers. Scanning, CSV
+              redaction, and PBKDF2 600k + AES-256-GCM vault operations executed strictly in{' '}
+              {shouldUseWorker ? 'Web Worker + local RAM' : 'local browser RAM'}.
+            </p>
+          ) : (
+            <ul className="proof-events">
+              {networkState.recentEvents.map((ev) => (
+                <li key={ev.id}>
+                  <span className="mono">{ev.timestamp}</span>
+                  <span className={ev.isAllowedOrigin ? 'log-optin' : 'log-unexpected'}>{ev.transport}</span>
+                  <span className="log-url mono">{ev.url}</span>
+                  <span>{ev.isAllowedOrigin ? 'opt-in' : 'unexpected'}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <main id="main-content" tabIndex={-1}>
         <div className="visually-hidden" aria-live="polite" aria-atomic="true">
           {liveStatus}
         </div>
 
-        {/* Top Telemetry Strip */}
+        {/* Compact Top Telemetry Strip */}
         <section className="mc-strip" aria-label="Sanitization telemetry summary">
           <div className="mc-card mc-cyan">
             <span className="mc-label">Entities detected</span>
@@ -420,225 +519,168 @@ export default function App() {
           </div>
         </section>
 
-        {/* Live Runtime Network Proof Bar */}
-        <div className="proof-bar">
-          <span className={`proof-dot ${egressClean ? '' : 'is-hot'}`} aria-hidden="true" />
-          <strong>{egressClean ? 'Zero-Egress Runtime Active' : 'External Network Activity'}</strong>
-          <span className="muted-copy">
-            {networkState.externalCallsBlockedOrLogged} external · {networkState.geminiOptInCalls} opt-in Gemini · fetch
-            / XHR / sendBeacon / Resource observers armed
-          </span>
-          <button
-            type="button"
-            className="btn btn-compact proof-toggle"
-            aria-expanded={showProofLog}
-            aria-controls="proof-log"
-            onClick={() => setShowProofLog((v) => !v)}
-          >
-            {showProofLog ? 'Hide network log' : 'Inspect network log'}
-          </button>
+        {/* Tab 1: Sanitize Studio */}
+        <div
+          role="tabpanel"
+          id="ws-panel-studio"
+          aria-labelledby="ws-tab-studio"
+          hidden={activeTab !== 'studio'}
+          className="ws-panel"
+        >
+          <SourceInputPanel
+            rawText={rawText}
+            sourceFilename={sourceFilename}
+            scanDurationMs={result.scan.durationMs}
+            onChangeText={setRawText}
+            onSelectFixture={(text, filename, preferCsv) => {
+              setRawText(text);
+              setSourceFilename(filename);
+              setDiffViewMode(preferCsv ? 'csv' : 'text');
+              setToast({ message: `Loaded ${filename}` });
+            }}
+            onClear={() => {
+              setRawText('');
+              setSourceFilename('sanitized_text.txt');
+              setDiffViewMode('text');
+            }}
+          />
+
+          <PolicyControls
+            mode={mode}
+            options={options}
+            allowlistText={allowlistText}
+            customRuleError={(shouldUseWorker ? workerTimeoutError : null) ?? result.scan.customRuleError}
+            onChangeMode={setMode}
+            onChangeOptions={setOptions}
+            onChangeAllowlist={setAllowlistText}
+          />
+
+          <MetricsOverview scan={result.scan} options={effectiveOptions} onToggleCategory={toggleCategory} />
+
+          <SideBySideDiff
+            mode={mode}
+            result={result}
+            diffViewMode={diffViewMode}
+            originalCsv={originalCsv}
+            sanitizedCsv={sanitizedCsvBundle}
+            neutralizeFormulas={neutralizeFormulas}
+            copied={copied}
+            onChangeDiffView={setDiffViewMode}
+            onToggleNeutralizeFormulas={setNeutralizeFormulas}
+            onCopy={() => void handleCopy()}
+            onDownloadSanitized={handleDownloadSanitized}
+            onDownloadAuditReport={() => void handleDownloadAuditReport()}
+          />
         </div>
 
-        {showProofLog && (
-          <div className="proof-log" id="proof-log" role="region" aria-label="Intercepted network events">
-            {networkState.recentEvents.length === 0 ? (
+        {/* Tab 2: Entity Review, Cloud DLP Taxonomy & AES-256-GCM Key Vault */}
+        <div
+          role="tabpanel"
+          id="ws-panel-vault"
+          aria-labelledby="ws-tab-vault"
+          hidden={activeTab !== 'vault'}
+          className="ws-panel"
+        >
+          <AuditLedger
+            segments={result.originalSegments}
+            mappings={result.mappings}
+            rejectedCards={result.scan.rejectedCards}
+            allowlist={effectiveOptions.allowlist}
+            onKeepOriginal={handleKeepOriginal}
+            onRestoreAllowlisted={handleRestoreAllowlisted}
+            onDownloadBundle={triggerDownload}
+          />
+        </div>
+
+        {/* Tab 3: Live Adversarial Self-Test Proof */}
+        <div
+          role="tabpanel"
+          id="ws-panel-proof"
+          aria-labelledby="ws-tab-proof"
+          hidden={activeTab !== 'proof'}
+          className="ws-panel"
+        >
+          <section className="panel" aria-labelledby="selftest-heading">
+            <div className="st-head">
+              <div>
+                <h2 id="selftest-heading" className="section-heading">
+                  Live 10-Case Adversarial Engine Proof
+                </h2>
+                <p className="panel-subtitle proof-empty">
+                  Deterministic probes verifying Luhn/IMEI filtering, PAN holder rules, Verhoeff UIDAI Aadhaar,
+                  IPv4-mapped IPv6, Amex masking, UPI separation, Google libphonenumber, ReDoS guard, and CWE-1236
+                  CSV.
+                </p>
+              </div>
+              <div className="action-row st-actions">
+                {selfTest && (
+                  <span
+                    className={`st-score mono ${selfTest.passed === selfTest.total ? 'safe-ink' : 'warn-ink'}`}
+                  >
+                    Live Adversarial Proof: {selfTest.passed}/{selfTest.total} Passed ({selfTest.durationMs} ms)
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const report = runAdversarialSelfTest();
+                    setSelfTest(report);
+                    setLiveStatus(`Self-test complete: ${report.passed} of ${report.total} probes passed.`);
+                    setToast({ message: `Adversarial proof: ${report.passed}/${report.total} passed` });
+                  }}
+                >
+                  <FlaskConical size={15} aria-hidden="true" />
+                  {selfTest ? 'Re-run Adversarial Self-Test' : 'Run 10-Case Adversarial Self-Test'}
+                </button>
+              </div>
+            </div>
+
+            {!selfTest ? (
               <p className="muted-copy proof-empty">
-                No external requests intercepted. Scanning, CSV redaction, and AES-256-GCM vault operations executed in
-                local memory.
+                Click <strong>Run 10-Case Adversarial Self-Test</strong> to execute and inspect all verification vectors
+                live inside your browser.
               </p>
             ) : (
-              <ul className="proof-events">
-                {networkState.recentEvents.map((ev) => (
-                  <li key={ev.id}>
-                    <span className="mono">{ev.timestamp}</span>
-                    <span className={ev.isAllowedOrigin ? 'log-optin' : 'log-unexpected'}>{ev.transport}</span>
-                    <span className="log-url mono">{ev.url}</span>
-                    <span>{ev.isAllowedOrigin ? 'opt-in' : 'unexpected'}</span>
-                  </li>
+              <div className="st-grid">
+                {selfTest.cases.map((c) => (
+                  <article key={c.id} className={`st-case ${c.passed ? 'is-pass' : 'is-fail'}`}>
+                    <div className="st-title">
+                      <span className={`st-badge ${c.passed ? 'pass' : 'fail'}`}>{c.passed ? 'PASS' : 'FAIL'}</span>
+                      <span>{c.title}</span>
+                    </div>
+                    <div className="st-detail mono">{c.detail}</div>
+                  </article>
                 ))}
-              </ul>
-            )}
-          </div>
-        )}
-
-        <SourceInputPanel
-          rawText={rawText}
-          sourceFilename={sourceFilename}
-          scanDurationMs={result.scan.durationMs}
-          onChangeText={setRawText}
-          onSelectFixture={(text, filename, preferCsv) => {
-            setRawText(text);
-            setSourceFilename(filename);
-            setDiffViewMode(preferCsv ? 'csv' : 'text');
-            setToast({ message: `Loaded ${filename}` });
-          }}
-          onClear={() => {
-            setRawText('');
-            setSourceFilename('sanitized_text.txt');
-            setDiffViewMode('text');
-          }}
-        />
-
-        <PolicyControls
-          mode={mode}
-          options={options}
-          allowlistText={allowlistText}
-          customRuleError={(shouldUseWorker ? workerTimeoutError : null) ?? result.scan.customRuleError}
-          onChangeMode={setMode}
-          onChangeOptions={setOptions}
-          onChangeAllowlist={setAllowlistText}
-        />
-
-        <MetricsOverview scan={result.scan} options={effectiveOptions} onToggleCategory={toggleCategory} />
-
-        <SideBySideDiff
-          mode={mode}
-          result={result}
-          diffViewMode={diffViewMode}
-          originalCsv={originalCsv}
-          sanitizedCsv={sanitizedCsvBundle}
-          neutralizeFormulas={neutralizeFormulas}
-          copied={copied}
-          onChangeDiffView={setDiffViewMode}
-          onToggleNeutralizeFormulas={setNeutralizeFormulas}
-          onCopy={() => void handleCopy()}
-          onDownloadSanitized={handleDownloadSanitized}
-          onDownloadAuditReport={() => void handleDownloadAuditReport()}
-        />
-
-        {/* Tabbed Inspection, Adversarial Proof & Compliance Drawer */}
-        <section className="wb-drawer" aria-label="Audit, Adversarial Self-Test & Advisor">
-          <div className="drawer-tabs" role="tablist" aria-label="Audit, verification and advisor panels">
-            {(
-              [
-                ['audit', 'Entity Audit & Key Vault', result.mappings.length],
-                ['proof', 'Adversarial Self-Test Proof', selfTest ? selfTest.passed : 10],
-                ['gemini', 'Compliance Advisor', null],
-              ] as [DrawerTab, string, number | null][]
-            ).map(([id, label, count], idx) => (
-              <button
-                key={id}
-                ref={(el) => {
-                  drawerRefs.current[id] = el;
-                }}
-                type="button"
-                role="tab"
-                id={`drawer-tab-${id}`}
-                aria-selected={drawer === id}
-                aria-controls={`drawer-panel-${id}`}
-                tabIndex={drawer === id ? 0 : -1}
-                className="drawer-tab"
-                onClick={() => selectDrawer(id)}
-                onKeyDown={(e) => onDrawerKeyDown(e, idx)}
-              >
-                {label}
-                {count !== null && <span className="drawer-count mono">{count}</span>}
-              </button>
-            ))}
-          </div>
-
-          <div
-            className="drawer-panel"
-            role="tabpanel"
-            id="drawer-panel-audit"
-            aria-labelledby="drawer-tab-audit"
-            hidden={drawer !== 'audit'}
-          >
-            <AuditLedger
-              segments={result.originalSegments}
-              mappings={result.mappings}
-              rejectedCards={result.scan.rejectedCards}
-              allowlist={effectiveOptions.allowlist}
-              onKeepOriginal={handleKeepOriginal}
-              onRestoreAllowlisted={handleRestoreAllowlisted}
-              onDownloadBundle={triggerDownload}
-            />
-          </div>
-
-          <div
-            className="drawer-panel"
-            role="tabpanel"
-            id="drawer-panel-proof"
-            aria-labelledby="drawer-tab-proof"
-            hidden={drawer !== 'proof'}
-          >
-            <section className="panel" aria-labelledby="selftest-heading">
-              <div className="st-head">
-                <div>
-                  <h2 id="selftest-heading" className="section-heading">
-                    Live 10-Case Adversarial Engine Proof
-                  </h2>
-                  <p className="panel-subtitle proof-empty">
-                    Deterministic probes verifying Luhn/IMEI filtering, PAN holder rules, Verhoeff UIDAI Aadhaar,
-                    IPv4-mapped IPv6, Amex masking, UPI separation, Google libphonenumber, ReDoS guard, and CWE-1236
-                    CSV.
-                  </p>
-                </div>
-                <div className="action-row st-actions">
-                  {selfTest && (
-                    <span
-                      className={`st-score mono ${selfTest.passed === selfTest.total ? 'safe-ink' : 'warn-ink'}`}
-                    >
-                      Live Adversarial Proof: {selfTest.passed}/{selfTest.total} Passed ({selfTest.durationMs} ms)
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => {
-                      const report = runAdversarialSelfTest();
-                      setSelfTest(report);
-                      setLiveStatus(`Self-test complete: ${report.passed} of ${report.total} probes passed.`);
-                      setToast({ message: `Adversarial proof: ${report.passed}/${report.total} passed` });
-                    }}
-                  >
-                    <FlaskConical size={15} aria-hidden="true" />
-                    {selfTest ? 'Re-run Adversarial Self-Test' : 'Run 10-Case Adversarial Self-Test'}
-                  </button>
-                </div>
               </div>
+            )}
+          </section>
+        </div>
 
-              {!selfTest ? (
-                <p className="muted-copy proof-empty">
-                  Click <strong>Run 10-Case Adversarial Self-Test</strong> to execute and inspect all verification
-                  vectors live inside your browser.
-                </p>
-              ) : (
-                <div className="st-grid">
-                  {selfTest.cases.map((c) => (
-                    <article key={c.id} className={`st-case ${c.passed ? 'is-pass' : 'is-fail'}`}>
-                      <div className="st-title">
-                        <span className={`st-badge ${c.passed ? 'pass' : 'fail'}`}>{c.passed ? 'PASS' : 'FAIL'}</span>
-                        <span>{c.title}</span>
-                      </div>
-                      <div className="st-detail mono">{c.detail}</div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
-
-          <div
-            className="drawer-panel"
-            role="tabpanel"
-            id="drawer-panel-gemini"
-            aria-labelledby="drawer-tab-gemini"
-            hidden={drawer !== 'gemini'}
-          >
-            <GeminiAdvisorPanel
-              summary={safeSummary}
-              onApplySyntheticText={(synthetic) => {
-                setRawText(synthetic);
-                setSourceFilename('gemini_synthetic_log.txt');
-                setDiffViewMode('text');
-                setToast({ message: 'Synthetic fixture applied' });
-              }}
-            />
-          </div>
-        </section>
+        {/* Tab 4: Compliance Advisor (Offline + Gemini Counts-Only) */}
+        <div
+          role="tabpanel"
+          id="ws-panel-gemini"
+          aria-labelledby="ws-tab-gemini"
+          hidden={activeTab !== 'gemini'}
+          className="ws-panel"
+        >
+          <GeminiAdvisorPanel
+            summary={safeSummary}
+            onApplySyntheticText={(synthetic) => {
+              setRawText(synthetic);
+              setSourceFilename('gemini_synthetic_log.txt');
+              setDiffViewMode('text');
+              setActiveTab('studio');
+              setToast({ message: 'Synthetic fixture applied in Sanitize Studio' });
+            }}
+          />
+        </div>
 
         <div className="kbd-hints">
+          <span>
+            <kbd>Alt</kbd>+<kbd>1–4</kbd> switch workspace tab
+          </span>
           <span>
             <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> redaction mode
           </span>
