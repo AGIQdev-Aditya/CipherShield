@@ -48,6 +48,7 @@ export function buildOfflineComplianceBrief(summary: SafeScanSummary): string {
 /**
  * Optional Google Gemini Compliance Advisor using structured JSON schema output.
  * Receives ONLY aggregate anonymized counts (zero raw text or PII).
+ * Falls back to the offline brief on any API error.
  */
 export async function generateComplianceAdvice(
   apiKey: string,
@@ -69,29 +70,33 @@ Luhn-Rejected Non-Card Numeric Candidates Ignored: ${summary.luhnRejectedCount}
 Detected Cloud DLP InfoType Counts:
 ${summaryLines || '- None detected'}`;
 
-  const ai = new GoogleGenAI({ apiKey: cleanKey });
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: prompt,
-    config: {
-      systemInstruction:
-        'You are a strict cybersecurity compliance architect specializing in India DPDP Act, UIDAI Aadhaar guidelines, PCI-DSS, and log sanitization.',
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          severity: { type: Type.STRING },
-          recommendations: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
+  let rawText = '';
+  try {
+    const ai = new GoogleGenAI({ apiKey: cleanKey });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        systemInstruction:
+          'You are a strict cybersecurity compliance architect specializing in India DPDP Act, UIDAI Aadhaar guidelines, PCI-DSS, and log sanitization.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            severity: { type: Type.STRING },
+            recommendations: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
           },
+          required: ['severity', 'recommendations'],
         },
-        required: ['severity', 'recommendations'],
       },
-    },
-  });
-
-  const rawText = response.text?.trim();
+    });
+    rawText = response.text?.trim() ?? '';
+  } catch {
+    return buildOfflineComplianceBrief(summary);
+  }
   if (!rawText) return buildOfflineComplianceBrief(summary);
 
   try {
