@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FlaskConical, KeyRound, ShieldCheck, Sparkles } from 'lucide-react';
 import { AuditLedger } from './components/AuditLedger';
 import { GeminiAdvisorPanel } from './components/GeminiAdvisorPanel';
@@ -61,6 +61,8 @@ export default function App() {
   });
 
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const navTabsRef = useRef<HTMLDivElement>(null);
+  const navSliderRef = useRef<HTMLSpanElement>(null);
   const tabRefs = useRef<Record<WorkspaceTab, HTMLButtonElement | null>>({
     studio: null,
     vault: null,
@@ -327,8 +329,26 @@ export default function App() {
 
   const selectTab = (tab: WorkspaceTab, focus = false) => {
     setActiveTab(tab);
+    if (tab === 'proof' && !selfTest) {
+      const report = runAdversarialSelfTest();
+      setSelfTest(report);
+      setLiveStatus(`Self-test complete: ${report.passed} of ${report.total} probes passed.`);
+    }
     if (focus) tabRefs.current[tab]?.focus();
   };
+
+  useLayoutEffect(() => {
+    const updateSlider = () => {
+      const activeBtn = tabRefs.current[activeTab];
+      const slider = navSliderRef.current;
+      if (!activeBtn || !slider) return;
+      slider.style.width = `${activeBtn.offsetWidth}px`;
+      slider.style.transform = `translate3d(${activeBtn.offsetLeft}px, ${activeBtn.offsetTop}px, 0)`;
+    };
+    updateSlider();
+    window.addEventListener('resize', updateSlider);
+    return () => window.removeEventListener('resize', updateSlider);
+  }, [activeTab, result.scan.totalDetected, result.mappings.length, selfTest]);
 
   const onTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, idx: number) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft' && e.key !== 'Home' && e.key !== 'End') return;
@@ -416,7 +436,8 @@ export default function App() {
 
       {/* Sticky Top Workspace Navigation & Live Telemetry */}
       <nav className="workspace-nav-shell" aria-label="Workspace navigation">
-        <div className="workspace-tabs" role="tablist" aria-label="CipherShield workspace sections">
+        <div ref={navTabsRef} className="workspace-tabs" role="tablist" aria-label="CipherShield workspace sections">
+          <span ref={navSliderRef} className="ws-slider" aria-hidden="true" />
           {WORKSPACE_TABS.map((tab, idx) => {
             const badge = getTabBadge(tab.id);
             const selected = activeTab === tab.id;
@@ -525,35 +546,37 @@ export default function App() {
           id="ws-panel-studio"
           aria-labelledby="ws-tab-studio"
           hidden={activeTab !== 'studio'}
-          className="ws-panel"
+          className={`ws-panel ${activeTab === 'studio' ? 'is-active' : ''}`}
         >
-          <SourceInputPanel
-            rawText={rawText}
-            sourceFilename={sourceFilename}
-            scanDurationMs={result.scan.durationMs}
-            onChangeText={setRawText}
-            onSelectFixture={(text, filename, preferCsv) => {
-              setRawText(text);
-              setSourceFilename(filename);
-              setDiffViewMode(preferCsv ? 'csv' : 'text');
-              setToast({ message: `Loaded ${filename}` });
-            }}
-            onClear={() => {
-              setRawText('');
-              setSourceFilename('sanitized_text.txt');
-              setDiffViewMode('text');
-            }}
-          />
+          <div className="studio-top-grid">
+            <SourceInputPanel
+              rawText={rawText}
+              sourceFilename={sourceFilename}
+              scanDurationMs={result.scan.durationMs}
+              onChangeText={setRawText}
+              onSelectFixture={(text, filename, preferCsv) => {
+                setRawText(text);
+                setSourceFilename(filename);
+                setDiffViewMode(preferCsv ? 'csv' : 'text');
+                setToast({ message: `Loaded ${filename}` });
+              }}
+              onClear={() => {
+                setRawText('');
+                setSourceFilename('sanitized_text.txt');
+                setDiffViewMode('text');
+              }}
+            />
 
-          <PolicyControls
-            mode={mode}
-            options={options}
-            allowlistText={allowlistText}
-            customRuleError={(shouldUseWorker ? workerTimeoutError : null) ?? result.scan.customRuleError}
-            onChangeMode={setMode}
-            onChangeOptions={setOptions}
-            onChangeAllowlist={setAllowlistText}
-          />
+            <PolicyControls
+              mode={mode}
+              options={options}
+              allowlistText={allowlistText}
+              customRuleError={(shouldUseWorker ? workerTimeoutError : null) ?? result.scan.customRuleError}
+              onChangeMode={setMode}
+              onChangeOptions={setOptions}
+              onChangeAllowlist={setAllowlistText}
+            />
+          </div>
 
           <MetricsOverview scan={result.scan} options={effectiveOptions} onToggleCategory={toggleCategory} />
 
@@ -579,7 +602,7 @@ export default function App() {
           id="ws-panel-vault"
           aria-labelledby="ws-tab-vault"
           hidden={activeTab !== 'vault'}
-          className="ws-panel"
+          className={`ws-panel ${activeTab === 'vault' ? 'is-active' : ''}`}
         >
           <AuditLedger
             segments={result.originalSegments}
@@ -598,7 +621,7 @@ export default function App() {
           id="ws-panel-proof"
           aria-labelledby="ws-tab-proof"
           hidden={activeTab !== 'proof'}
-          className="ws-panel"
+          className={`ws-panel ${activeTab === 'proof' ? 'is-active' : ''}`}
         >
           <section className="panel" aria-labelledby="selftest-heading">
             <div className="st-head">
@@ -631,7 +654,7 @@ export default function App() {
                   }}
                 >
                   <FlaskConical size={15} aria-hidden="true" />
-                  {selfTest ? 'Re-run Adversarial Self-Test' : 'Run 10-Case Adversarial Self-Test'}
+                  Run 10-Case Adversarial Self-Test
                 </button>
               </div>
             </div>
@@ -663,7 +686,7 @@ export default function App() {
           id="ws-panel-gemini"
           aria-labelledby="ws-tab-gemini"
           hidden={activeTab !== 'gemini'}
-          className="ws-panel"
+          className={`ws-panel ${activeTab === 'gemini' ? 'is-active' : ''}`}
         >
           <GeminiAdvisorPanel
             summary={safeSummary}
