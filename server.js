@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +19,8 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 };
 
+const COMPRESSIBLE_EXTS = new Set(['.html', '.js', '.css', '.svg', '.json', '.txt']);
+
 const SECURITY_HEADERS = {
   'Content-Security-Policy': [
     "default-src 'self'",
@@ -25,7 +28,7 @@ const SECURITY_HEADERS = {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
-    "connect-src 'self'",
+    "connect-src 'self' https://generativelanguage.googleapis.com",
     "object-src 'none'",
     "base-uri 'none'",
     "frame-ancestors 'none'",
@@ -49,7 +52,7 @@ const server = http.createServer((req, res) => {
 
   if (reqPath === '/healthz') {
     res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ status: 'ok', service: 'ciphershield', egress: 'zero-client-side' }));
+    res.end(JSON.stringify({ status: 'ok', service: 'ciphershield', egress: 'client-side-redaction' }));
     return;
   }
 
@@ -69,6 +72,7 @@ const server = http.createServer((req, res) => {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
   const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
+  const acceptsGzip = (req.headers['accept-encoding'] || '').includes('gzip');
 
   fs.readFile(filePath, (err, content) => {
     if (err) {
@@ -76,6 +80,20 @@ const server = http.createServer((req, res) => {
       res.end('Internal Server Error');
       return;
     }
+
+    if (acceptsGzip && COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
+      const zipped = zlib.gzipSync(content);
+      res.writeHead(200, {
+        ...SECURITY_HEADERS,
+        'Content-Type': contentType,
+        'Content-Encoding': 'gzip',
+        Vary: 'Accept-Encoding',
+        'Cache-Control': cacheControl,
+      });
+      res.end(req.method === 'HEAD' ? undefined : zipped);
+      return;
+    }
+
     res.writeHead(200, {
       ...SECURITY_HEADERS,
       'Content-Type': contentType,

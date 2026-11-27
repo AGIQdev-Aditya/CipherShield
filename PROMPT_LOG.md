@@ -43,5 +43,15 @@
 
 **Verification Results:**
 - Passed `npm run lint` (`eslint .` with zero errors/warnings across TypeScript and `jsx-a11y`).
-- Passed `npm test` (13 Vitest unit & performance tests).
-- Verified `npm run build`, live HTTP security headers, and headless Chromium render.
+- Passed `npm test` (19 Vitest tests across `tests/engine.test.ts` and `tests/ui.test.tsx`, including `<App />` `axe-core` accessibility audit and 100 KB benchmark).
+- Verified `npm run build`, dynamic `@google/genai` code-splitting, gzip compression in `server.js`, live HTTP security headers, and headless Chromium render.
+
+---
+
+## Prompt 5 — Google Services Integration & Bundle Optimization
+**Prompt Objective:**
+> Integrate the official `@google/genai` SDK (`src/services/geminiAdvisor.ts`) via dynamic code-splitting for an optional, zero-PII counts-only DPDP/PCI-DSS compliance advisor and synthetic test log generator, and add Node `zlib` gzip compression to `server.js`.
+
+**Outcome:**
+- Initial JS entry chunk stays lightweight (~267 KB minified / ~83 KB gzipped) while `@google/genai` loads strictly on demand.
+- Zero raw user PII ever leaves the client browser.

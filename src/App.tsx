@@ -52,6 +52,10 @@ export default function App() {
   const [liveStatus, setLiveStatus] = useState<string>('');
   const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('system');
   const [diffViewMode, setDiffViewMode] = useState<'text' | 'csv'>('text');
+  const [geminiKey, setGeminiKey] = useState<string>('');
+  const [geminiOutput, setGeminiOutput] = useState<string>('');
+  const [geminiLoading, setGeminiLoading] = useState<boolean>(false);
+  const [geminiError, setGeminiError] = useState<string | null>(null);
 
   const dialogRef = useRef<HTMLDialogElement>(null);
   const rawInputId = useId();
@@ -59,6 +63,7 @@ export default function App() {
   const allowlistInputId = useId();
   const customLabelId = useId();
   const customPatternId = useId();
+  const geminiKeyId = useId();
 
   useEffect(() => {
     const root = document.documentElement;
@@ -215,6 +220,38 @@ export default function App() {
 
   const cycleTheme = () => {
     setTheme((prev) => (prev === 'system' ? 'dark' : prev === 'dark' ? 'light' : 'system'));
+  };
+
+  const handleGeminiAdvice = async () => {
+    setGeminiError(null);
+    setGeminiLoading(true);
+    try {
+      const { generateComplianceAdvice } = await import('./services/geminiAdvisor');
+      const advice = await generateComplianceAdvice(geminiKey, result.scan);
+      setGeminiOutput(advice);
+    } catch (err) {
+      setGeminiError(err instanceof Error ? err.message : 'Gemini request failed.');
+    } finally {
+      setGeminiLoading(false);
+    }
+  };
+
+  const handleGeminiSynthetic = async () => {
+    setGeminiError(null);
+    setGeminiLoading(true);
+    try {
+      const { generateGeminiSyntheticLog } = await import('./services/geminiAdvisor');
+      const synthetic = await generateGeminiSyntheticLog(geminiKey);
+      if (synthetic) {
+        setRawText(synthetic);
+        setSourceFilename('gemini_synthetic_log.txt');
+        setDiffViewMode('text');
+      }
+    } catch (err) {
+      setGeminiError(err instanceof Error ? err.message : 'Gemini synthetic generation failed.');
+    } finally {
+      setGeminiLoading(false);
+    }
   };
 
   return (
@@ -793,6 +830,70 @@ export default function App() {
                 ))}
               </ul>
             </div>
+          )}
+        </section>
+
+        {/* Optional Google Gemini Compliance Advisor (Zero Raw PII Sent) */}
+        <section className="panel" aria-labelledby="gemini-advisor-heading">
+          <div className="toolbar-grid">
+            <div>
+              <h2 id="gemini-advisor-heading" style={{ margin: 0, fontSize: '1.05rem' }}>
+                5. Optional Google Gemini Compliance Advisor (Counts-Only)
+              </h2>
+              <p style={{ margin: '4px 0 0', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                Zero raw text or PII ever leaves your browser. Only anonymized Cloud DLP entity counts or synthetic test requests are sent if you supply a Gemini key.
+              </p>
+            </div>
+          </div>
+
+          <div className="policy-grid" style={{ borderTop: 'none', paddingTop: '12px' }}>
+            <div>
+              <label htmlFor={geminiKeyId} className="field-label">
+                Google Gemini API Key (Optional, Volatile Memory Only)
+              </label>
+              <input
+                id={geminiKeyId}
+                type="password"
+                className="text-input mono"
+                value={geminiKey}
+                onChange={(e) => setGeminiKey(e.target.value)}
+                placeholder="AIza... (never stored or logged)"
+                autoComplete="off"
+              />
+            </div>
+
+            <div className="sample-buttons" style={{ alignSelf: 'end' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void handleGeminiAdvice()}
+                disabled={geminiLoading || !geminiKey.trim()}
+              >
+                <Sparkles size={15} aria-hidden="true" />
+                {geminiLoading ? 'Analyzing...' : 'Analyze Risk Counts with Gemini'}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void handleGeminiSynthetic()}
+                disabled={geminiLoading || !geminiKey.trim()}
+              >
+                <Shuffle size={15} aria-hidden="true" />
+                Generate Synthetic Fixture via Gemini
+              </button>
+            </div>
+          </div>
+
+          {geminiError && (
+            <p role="alert" style={{ color: '#ef4444', fontSize: '0.84rem', marginTop: '8px' }}>
+              {geminiError}
+            </p>
+          )}
+
+          {geminiOutput && (
+            <pre className="diff-pre" style={{ marginTop: '12px', minHeight: '90px' }}>
+              {geminiOutput}
+            </pre>
           )}
         </section>
       </main>
