@@ -7,6 +7,9 @@ import { generateSyntheticChaosLog, SAMPLE_DATASETS } from '../src/engine/sample
 import { parseCsvRows, redactCsvCells, serializeCsvRows } from '../src/engine/csvParser';
 import { decryptPseudonymLedger, encryptPseudonymLedger } from '../src/engine/cryptoVault';
 import { runAdversarialSelfTest } from '../src/engine/selfTest';
+import { executeSanitizationPipeline } from '../src/engine/pipeline';
+import { buildAuditCertificate } from '../src/engine/auditReport';
+import { canonicalizeIPv6 } from '../src/engine/validators';
 import { buildOfflineComplianceBrief } from '../src/services/geminiAdvisor';
 
 describe('Luhn & Financial Validators', () => {
@@ -45,7 +48,7 @@ describe('Luhn & Financial Validators', () => {
 
 describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
   it('detects all 6 PII categories accurately, respects allowlist 127.0.0.1, and tracks Luhn rejections', () => {
-    const sample = SAMPLE_DATASETS[0].content;
+    const sample = SAMPLE_DATASETS[0]?.content ?? '';
     const result = scanTextForPii(sample);
 
     expect(result.counts.EMAIL).toBe(4);
@@ -108,7 +111,7 @@ describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
     const padded = parseCsvRows('  header_a , header_b \n"  alice  ",  alice@corp.in  \n');
     expect(padded.isTabular).toBe(true);
     expect(padded.headers[0]).toBe('  header_a ');
-    expect(padded.rows[0][0]).toBe('  alice  ');
+    expect(padded.rows[0]?.[0]).toBe('  alice  ');
 
     const badColumns = parseCsvRows('a,b,c\n1,2\n', true);
     expect(badColumns.isTabular).toBe(false);
@@ -152,17 +155,49 @@ describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
 
     const restored = await decryptPseudonymLedger(bundle, 'strong-pass-2026');
     expect(restored.length).toBe(2);
-    expect(restored[0].sampleValue).toBe('aarav@corp.in');
+    expect(restored[0]?.sampleValue).toBe('aarav@corp.in');
 
     await expect(decryptPseudonymLedger(bundle, 'wrong-pass-2026')).rejects.toThrow(/Decryption failed/);
 
     // Tampering with AAD-bound metadata must also fail AES-GCM authentication
     const tamperedBundle = { ...bundle, createdAt: '2099-01-01T00:00:00.000Z' };
     await expect(decryptPseudonymLedger(tamperedBundle, 'strong-pass-2026')).rejects.toThrow(/Decryption failed/);
+
+    // Corrupt base64 payloads must fail gracefully inside the unified decryption error path
+    await expect(
+      decryptPseudonymLedger({ ...bundle, saltBase64: 'not-valid-base64!!!' }, 'strong-pass-2026'),
+    ).rejects.toThrow(/Decryption failed/);
+  });
+
+  it('executes shared worker/main sanitization pipeline and builds zero-PII SHA-256 audit certificates', async () => {
+    const sample = SAMPLE_DATASETS[0]?.content ?? '';
+    const out = executeSanitizationPipeline({
+      text: sample,
+      mode: 'pseudonymize',
+      options: DEFAULT_DETECTION_OPTIONS,
+      neutralizeFormulas: true,
+      expectCsv: false,
+    });
+    expect(out.originalCsv.isTabular).toBe(false);
+    expect(out.result.scan.risk.scoreAfter).toBe(0);
+
+    const cert = await buildAuditCertificate({
+      rawText: sample,
+      sanitizedText: out.result.sanitizedText,
+      sourceFilename: 'incident_support_log.txt',
+      mode: 'pseudonymize',
+      shouldUseWorker: false,
+      networkState: { externalCallsBlockedOrLogged: 0, geminiOptInCalls: 0, recentEvents: [] },
+      scan: out.result.scan,
+    });
+    expect(cert.integrityDigests.originalSha256).toHaveLength(64);
+    expect(cert.integrityDigests.originalSha256).not.toBe(cert.integrityDigests.sanitizedSha256);
+    expect(JSON.stringify(cert)).not.toContain('aarav.kulkarni@fintech-corp.in');
+    expect(canonicalizeIPv6('2001:db8::1')).toBe('2001:0db8:0000:0000:0000:0000:0000:0001');
   });
 
   it('maps detected counts to Google Cloud DLP InfoTypes and DeidentifyConfig cleanly', () => {
-    const scan = scanTextForPii(SAMPLE_DATASETS[0].content);
+    const scan = scanTextForPii(SAMPLE_DATASETS[0]?.content ?? '');
     const dlp = buildCloudDlpSummary(scan.counts);
     const cfg = buildCloudDlpDeidentifyConfig(scan.counts, 'partial');
     expect(dlp.some((entry) => entry.googleCloudDlpInfoType === 'CREDIT_CARD_NUMBER')).toBe(true);
@@ -234,17 +269,17 @@ describe('Three Redaction Modes, CSV Parsing & Performance', () => {
   });
 
   it('parses quoted RFC-4180 CSV rows and preserves columns during redaction', () => {
-    const csv = SAMPLE_DATASETS[1].content;
+    const csv = SAMPLE_DATASETS[1]?.content ?? '';
     const parsed = parseCsvRows(csv);
     expect(parsed.isTabular).toBe(true);
     expect(parsed.rows.length).toBe(3);
-    expect(parsed.rows[0][1]).toBe('Deshmukh, Rohan');
+    expect(parsed.rows[0]?.[1]).toBe('Deshmukh, Rohan');
 
     const res = redactText(csv, 'pseudonymize');
     const sanitizedParsed = parseCsvRows(res.sanitizedText);
     expect(sanitizedParsed.isTabular).toBe(true);
-    expect(sanitizedParsed.rows[2][2]).toBe('USER_01');
-    expect(sanitizedParsed.rows[2][6]).toBe('1234-5678-9012-3456'); // Luhn-invalid preserved
+    expect(sanitizedParsed.rows[2]?.[2]).toBe('USER_01');
+    expect(sanitizedParsed.rows[2]?.[6]).toBe('1234-5678-9012-3456'); // Luhn-invalid preserved
   });
 
   it('generates offline synthetic chaos logs with valid Luhn cards, PAN, Aadhaar, UPI, and decoys', () => {
@@ -256,7 +291,7 @@ describe('Three Redaction Modes, CSV Parsing & Performance', () => {
   });
 
   it('processes 100 KB of log text cleanly under budget', () => {
-    const chunk = SAMPLE_DATASETS[0].content + '\n';
+    const chunk = (SAMPLE_DATASETS[0]?.content ?? '') + '\n';
     const largePayload = chunk.repeat(120); // ~105 KB
     const t0 = performance.now();
     const res = redactText(largePayload, 'pseudonymize');

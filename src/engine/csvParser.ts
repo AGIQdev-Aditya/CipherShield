@@ -8,146 +8,135 @@ export interface ParsedCsv {
   parseError: string | null;
 }
 
+interface CsvScanState {
+  lines: string[][];
+  row: string[];
+  cell: string;
+  inQuotes: boolean;
+  justClosedQuote: boolean;
+  quoteError: string | null;
+}
+
+const EMPTY_CSV: ParsedCsv = { headers: [], rows: [], isTabular: false, parseError: null };
+
+function buildCsvError(parseError: string | null): ParsedCsv {
+  return { headers: [], rows: [], isTabular: false, parseError };
+}
+
+function consumeLineBreak(ch: string, next: string | undefined): number {
+  if (ch === '\r' && next === '\n') return 2;
+  if (ch === '\n' || ch === '\r') return 1;
+  return 0;
+}
+
+function stepCsvParser(state: CsvScanState, ch: string, next: string | undefined): number {
+  if (state.inQuotes) {
+    if (ch === '"' && next === '"') {
+      state.cell += '"';
+      return 2;
+    }
+    if (ch === '"') {
+      state.inQuotes = false;
+      state.justClosedQuote = true;
+    } else {
+      state.cell += ch;
+    }
+    return 1;
+  }
+
+  const newlineStep = consumeLineBreak(ch, next);
+  if (newlineStep > 0) {
+    state.justClosedQuote = false;
+    state.row.push(state.cell);
+    state.lines.push(state.row);
+    state.row = [];
+    state.cell = '';
+    return newlineStep;
+  }
+
+  if (ch === ',') {
+    state.justClosedQuote = false;
+    state.row.push(state.cell);
+    state.cell = '';
+    return 1;
+  }
+
+  if (state.justClosedQuote) {
+    state.quoteError ??= `Malformed CSV: unexpected character "${ch}" after closing quote on row ${state.lines.length + 1}.`;
+    state.justClosedQuote = false;
+    state.cell += ch;
+    return 1;
+  }
+
+  if (ch === '"') {
+    if (state.cell.length > 0) {
+      state.quoteError ??= `Malformed CSV: unexpected unescaped quote inside unquoted field on row ${state.lines.length + 1}.`;
+      state.cell += ch;
+    } else {
+      state.inQuotes = true;
+    }
+    return 1;
+  }
+
+  state.cell += ch;
+  return 1;
+}
+
+function validateTabularGrid(lines: string[][], quoteError: string | null, expectCsv: boolean): ParsedCsv {
+  const resolvedHeader = lines[0];
+  if (lines.length < 2 || !resolvedHeader || resolvedHeader.length < 2) {
+    return buildCsvError(expectCsv ? quoteError : null);
+  }
+  if (quoteError) return buildCsvError(quoteError);
+
+  const colCount = resolvedHeader.length;
+  const badRowIdx = lines.findIndex((r) => r.length !== colCount);
+  if (badRowIdx !== -1) {
+    const actualLen = lines[badRowIdx]?.length ?? 0;
+    return buildCsvError(
+      expectCsv ? `Malformed CSV: row ${badRowIdx + 1} has ${actualLen} columns (expected ${colCount}).` : null,
+    );
+  }
+  return { headers: resolvedHeader, rows: lines.slice(1), isTabular: true, parseError: null };
+}
+
+function finalizeParsedCsv(state: CsvScanState, expectCsv: boolean): ParsedCsv {
+  const headerRow = state.lines[0];
+  if (state.inQuotes) {
+    const shouldReport = expectCsv || (headerRow !== undefined && headerRow.length >= 2);
+    return buildCsvError(shouldReport ? 'Malformed CSV: unclosed quote detected.' : null);
+  }
+
+  if (state.cell.length > 0 || state.row.length > 0) {
+    state.row.push(state.cell);
+    state.lines.push(state.row);
+  }
+
+  return validateTabularGrid(state.lines, state.quoteError, expectCsv);
+}
+
 /**
  * Parses all CSV records strictly per RFC-4180 while preserving cell whitespace
  * (strips UTF-8 BOM + trailing line endings only, validates quotes & column parity).
  */
 export function parseCsvRows(input: string, expectCsv = false): ParsedCsv {
   const cleaned = input.replace(/^\uFEFF/, '').replace(/(?:\r\n|\n|\r)+$/, '');
-  if (!cleaned) {
-    return { headers: [], rows: [], isTabular: false, parseError: null };
-  }
+  if (!cleaned) return EMPTY_CSV;
 
-  const lines: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let inQuotes = false;
-  let justClosedQuote = false;
-  let quoteError: string | null = null;
-
-  for (let i = 0; i < cleaned.length; i++) {
-    const ch = cleaned[i];
-    const next = cleaned[i + 1];
-
-    if (inQuotes) {
-      if (ch === '"' && next === '"') {
-        cell += '"';
-        i += 1;
-      } else if (ch === '"') {
-        inQuotes = false;
-        justClosedQuote = true;
-      } else {
-        cell += ch;
-      }
-      continue;
-    }
-
-    if (justClosedQuote) {
-      if (ch === ',') {
-        justClosedQuote = false;
-        row.push(cell);
-        cell = '';
-        continue;
-      }
-      if (ch === '\r' && next === '\n') {
-        justClosedQuote = false;
-        row.push(cell);
-        lines.push(row);
-        row = [];
-        cell = '';
-        i += 1;
-        continue;
-      }
-      if (ch === '\n' || ch === '\r') {
-        justClosedQuote = false;
-        row.push(cell);
-        lines.push(row);
-        row = [];
-        cell = '';
-        continue;
-      }
-      if (!quoteError) {
-        quoteError = `Malformed CSV: unexpected character "${ch}" after closing quote on row ${lines.length + 1}.`;
-      }
-      justClosedQuote = false;
-      cell += ch;
-      continue;
-    }
-
-    if (ch === '"') {
-      if (cell.length > 0) {
-        if (!quoteError) {
-          quoteError = `Malformed CSV: unexpected unescaped quote inside unquoted field on row ${lines.length + 1}.`;
-        }
-        cell += ch;
-      } else {
-        inQuotes = true;
-      }
-    } else if (ch === ',') {
-      row.push(cell);
-      cell = '';
-    } else if (ch === '\r' && next === '\n') {
-      row.push(cell);
-      lines.push(row);
-      row = [];
-      cell = '';
-      i += 1;
-    } else if (ch === '\n' || ch === '\r') {
-      row.push(cell);
-      lines.push(row);
-      row = [];
-      cell = '';
-    } else {
-      cell += ch;
-    }
-  }
-
-  if (inQuotes) {
-    if (expectCsv || (lines.length > 0 && lines[0].length >= 2)) {
-      return { headers: [], rows: [], isTabular: false, parseError: 'Malformed CSV: unclosed quote detected.' };
-    }
-    return { headers: [], rows: [], isTabular: false, parseError: null };
-  }
-
-  if (cell.length > 0 || row.length > 0) {
-    row.push(cell);
-    lines.push(row);
-  }
-
-  if (lines.length < 2) {
-    if (expectCsv && quoteError) {
-      return { headers: [], rows: [], isTabular: false, parseError: quoteError };
-    }
-    return { headers: [], rows: [], isTabular: false, parseError: null };
-  }
-
-  const colCount = lines[0].length;
-  if (colCount < 2) {
-    return { headers: [], rows: [], isTabular: false, parseError: expectCsv && quoteError ? quoteError : null };
-  }
-
-  if (quoteError && (expectCsv || colCount >= 2)) {
-    return { headers: [], rows: [], isTabular: false, parseError: quoteError };
-  }
-
-  const badRowIdx = lines.findIndex((r) => r.length !== colCount);
-  if (badRowIdx !== -1) {
-    return {
-      headers: [],
-      rows: [],
-      isTabular: false,
-      parseError: expectCsv
-        ? `Malformed CSV: row ${badRowIdx + 1} has ${lines[badRowIdx].length} columns (expected ${colCount}).`
-        : null,
-    };
-  }
-
-  return {
-    headers: lines[0],
-    rows: lines.slice(1),
-    isTabular: true,
-    parseError: null,
+  const state: CsvScanState = {
+    lines: [],
+    row: [],
+    cell: '',
+    inQuotes: false,
+    justClosedQuote: false,
+    quoteError: null,
   };
+
+  for (let i = 0; i < cleaned.length; ) {
+    i += stepCsvParser(state, cleaned.charAt(i), cleaned[i + 1]);
+  }
+
+  return finalizeParsedCsv(state, expectCsv);
 }
 
 /**

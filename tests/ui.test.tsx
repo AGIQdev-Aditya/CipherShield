@@ -40,7 +40,11 @@ describe('CipherShield UI, Security & Accessibility', () => {
     fireEvent.keyDown(fullMaskTab, { key: 'ArrowRight' });
     const partialTab = screen.getByRole('tab', { name: 'Partial Mask' });
     expect(partialTab.getAttribute('aria-selected')).toBe('true');
+    expect(partialTab.getAttribute('tabindex')).toBe('0');
     expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('XXXX-XXXX-XXXX-0366');
+
+    fireEvent.keyDown(partialTab, { key: 'End' });
+    expect(screen.getByRole('tab', { name: /Consistent Pseudonymization/i }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('activates structured CSV Column Diff when HR Payroll CSV is loaded', () => {
@@ -88,13 +92,16 @@ describe('CipherShield UI, Security & Accessibility', () => {
     fireEvent.click(screen.getByRole('button', { name: /0 External Egress/i }));
     expect(screen.getByRole('region', { name: /Intercepted network events/i })).toBeTruthy();
 
-    // Switch to Entity Review & Vault tab, click Keep Original & verify Undo toast
+    // Switch to Entity Review & Vault tab, click Keep Original & verify Undo toast reverts cleanly
     fireEvent.click(screen.getByRole('tab', { name: /Entity Review & Vault/i }));
     const keepButtons = screen.getAllByRole('button', { name: /Keep Original/i });
     expect(keepButtons.length).toBeGreaterThan(0);
-    fireEvent.click(keepButtons[0]);
+    const firstKeep = keepButtons[0];
+    if (firstKeep) fireEvent.click(firstKeep);
     expect(screen.getByLabelText('Kept / Allowlisted items').textContent).toContain('aarav.kulkarni@fintech-corp.in');
     expect(screen.getByRole('status').textContent).toContain('aarav.kulkarni@fintech-corp.in');
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.queryByLabelText('Kept / Allowlisted items')?.textContent).not.toContain('aarav.kulkarni@fintech-corp.in');
 
     // Switch to Self-Test & Proof tab & verify live proof executes cleanly
     fireEvent.click(screen.getByRole('tab', { name: /Self-Test & Proof/i }));

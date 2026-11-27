@@ -1,6 +1,8 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { PiiCategory } from '../types/pii';
 import { GOOGLE_DLP_INFOTYPE_MAP } from '../engine/dlpTaxonomy';
+import { PiiCategory } from '../types/pii';
+
+const GEMINI_ADVISOR_MODEL = 'gemini-3.8-flash';
 
 /**
  * Structurally isolated summary — prevents raw document text or PII strings from ever reaching Gemini API calls.
@@ -45,37 +47,36 @@ export function buildOfflineComplianceBrief(summary: SafeScanSummary): string {
     : 'No active high-risk PII exposure detected in the current document.';
 }
 
+function formatCompliancePrompt(summary: SafeScanSummary): string {
+  const summaryLines = (Object.keys(summary.counts) as PiiCategory[])
+    .filter((cat) => summary.counts[cat] > 0)
+    .map((cat) => `- ${GOOGLE_DLP_INFOTYPE_MAP[cat]}: ${summary.counts[cat]} entity(ies)`)
+    .join('\n');
+
+  return `Analyze this anonymized PII aggregate telemetry (zero raw values provided):
+Exposure Score: ${summary.riskScoreBefore}/100 (${summary.riskLevelBefore})
+Luhn-Rejected Non-Card Numeric Candidates Ignored: ${summary.luhnRejectedCount}
+Detected Cloud DLP InfoType Counts:
+${summaryLines || '- None detected'}`;
+}
+
 /**
  * Optional Google Gemini Compliance Advisor using structured JSON schema output.
- * Receives ONLY aggregate anonymized counts (zero raw text or PII).
- * Falls back to the offline brief on any API error.
+ * Receives ONLY aggregate anonymized counts (zero raw text or PII) and falls back cleanly offline.
  */
 export async function generateComplianceAdvice(
   apiKey: string,
   summary: SafeScanSummary,
 ): Promise<string> {
   const cleanKey = apiKey.trim();
-  if (!cleanKey) {
-    return buildOfflineComplianceBrief(summary);
-  }
-
-  const summaryLines = (Object.keys(summary.counts) as PiiCategory[])
-    .filter((cat) => summary.counts[cat] > 0)
-    .map((cat) => `- ${GOOGLE_DLP_INFOTYPE_MAP[cat]}: ${summary.counts[cat]} entity(ies)`)
-    .join('\n');
-
-  const prompt = `Analyze this anonymized PII aggregate telemetry (zero raw values provided):
-Exposure Score: ${summary.riskScoreBefore}/100 (${summary.riskLevelBefore})
-Luhn-Rejected Non-Card Numeric Candidates Ignored: ${summary.luhnRejectedCount}
-Detected Cloud DLP InfoType Counts:
-${summaryLines || '- None detected'}`;
+  if (!cleanKey) return buildOfflineComplianceBrief(summary);
 
   let rawText = '';
   try {
     const ai = new GoogleGenAI({ apiKey: cleanKey });
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
+      model: GEMINI_ADVISOR_MODEL,
+      contents: formatCompliancePrompt(summary),
       config: {
         systemInstruction:
           'You are a strict cybersecurity compliance architect specializing in India DPDP Act, UIDAI Aadhaar guidelines, PCI-DSS, and log sanitization.',
@@ -84,10 +85,7 @@ ${summaryLines || '- None detected'}`;
           type: Type.OBJECT,
           properties: {
             severity: { type: Type.STRING },
-            recommendations: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
+            recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
           },
           required: ['severity', 'recommendations'],
         },
@@ -102,18 +100,19 @@ ${summaryLines || '- None detected'}`;
   try {
     const parsed = JSON.parse(rawText) as { severity?: string; recommendations?: string[] };
     if (Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0) {
-      return `Gemini Assessment (${parsed.severity ?? summary.riskLevelBefore}):\n` +
-        parsed.recommendations.map((rec, i) => `${i + 1}. ${rec}`).join('\n');
+      return (
+        `Gemini Assessment (${parsed.severity ?? summary.riskLevelBefore}):\n` +
+        parsed.recommendations.map((rec, i) => `${i + 1}. ${rec}`).join('\n')
+      );
     }
   } catch {
-    // Return raw formatted text if JSON parsing falls back
+    // Fall back to returning the plain response text when structured JSON parsing fails
   }
   return rawText;
 }
 
 /**
- * Optional Google Gemini Synthetic Test Fixture Generator.
- * Generates strictly FICTIONAL dirty log samples for benchmarking.
+ * Optional Google Gemini Synthetic Test Fixture Generator producing fictional benchmark logs.
  */
 export async function generateGeminiSyntheticLog(apiKey: string): Promise<string> {
   const cleanKey = apiKey.trim();
@@ -121,12 +120,17 @@ export async function generateGeminiSyntheticLog(apiKey: string): Promise<string
     throw new Error('Provide a Google Gemini API key to generate synthetic fixtures.');
   }
 
-  const ai = new GoogleGenAI({ apiKey: cleanKey });
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents:
-      'Generate a short 10-line fictional customer support incident log containing fake Indian phone numbers (+91), fake emails (with one uppercase duplicate), 1 fake IPv4 address, 1 fake PAN format (ABCDE1234F style), and 1 fake Aadhaar 12-digit number so I can test a client-side redaction tool. Output raw log lines only, no markdown fences.',
-  });
-
-  return response.text?.trim() || '';
+  try {
+    const ai = new GoogleGenAI({ apiKey: cleanKey });
+    const response = await ai.models.generateContent({
+      model: GEMINI_ADVISOR_MODEL,
+      contents:
+        'Generate a short 10-line fictional customer support incident log containing fake Indian phone numbers (+91), fake emails (with one uppercase duplicate), 1 fake IPv4 address, 1 fake PAN format (ABCDE1234F style), and 1 fake Aadhaar 12-digit number so I can test a client-side redaction tool. Output raw log lines only, no markdown fences.',
+    });
+    return response.text?.trim() || '';
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? `Gemini fixture generation failed: ${err.message}` : 'Gemini fixture generation failed.',
+    );
+  }
 }

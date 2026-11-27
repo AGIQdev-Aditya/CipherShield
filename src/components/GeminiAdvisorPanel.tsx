@@ -7,14 +7,40 @@ interface GeminiAdvisorPanelProps {
   onApplySyntheticText: (text: string) => void;
 }
 
+function RegulatoryFrameworkGrid({ summary }: { summary: SafeScanSummary }) {
+  const dpdpHits = summary.counts.AADHAAR + summary.counts.PAN + summary.counts.UPI_ID + summary.counts.PHONE;
+  const pciHits = summary.counts.CREDIT_CARD;
+  const gdprHits = summary.counts.EMAIL + summary.counts.IP_ADDRESS + summary.counts.PHONE;
+
+  return (
+    <div className="reg-grid" aria-label="Regulatory framework impact counts">
+      <div className="reg-card">
+        <span className="stat-label">India DPDP Act / UIDAI</span>
+        <span className="stat-value mono">{dpdpHits}</span>
+        <span className="stat-sub">Aadhaar, PAN, UPI &amp; Mobile</span>
+      </div>
+      <div className="reg-card">
+        <span className="stat-label">PCI-DSS v4.0 Req 3.4</span>
+        <span className="stat-value mono">{pciHits}</span>
+        <span className="stat-sub">Luhn + IIN Payment Cards</span>
+      </div>
+      <div className="reg-card">
+        <span className="stat-label">EU GDPR Art. 4 / 32</span>
+        <span className="stat-value mono">{gdprHits}</span>
+        <span className="stat-sub">Emails, IPv4/IPv6 &amp; Phones</span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Lazy-loads @google/genai strictly on explicit user interaction using SafeScanSummary (zero raw text or PII).
  * Falls back cleanly to a deterministic offline compliance brief when no API key is entered.
  */
 export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvisorPanelProps) {
-  const [geminiKey, setGeminiKey] = useState<string>('');
-  const [geminiOutput, setGeminiOutput] = useState<string>('');
-  const [geminiLoading, setGeminiLoading] = useState<boolean>(false);
+  const [geminiKey, setGeminiKey] = useState('');
+  const [geminiOutput, setGeminiOutput] = useState('');
+  const [geminiLoading, setGeminiLoading] = useState(false);
   const [geminiError, setGeminiError] = useState<string | null>(null);
   const geminiKeyId = useId();
 
@@ -23,8 +49,7 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
     setGeminiLoading(true);
     try {
       const { generateComplianceAdvice } = await import('../services/geminiAdvisor');
-      const advice = await generateComplianceAdvice(geminiKey, summary);
-      setGeminiOutput(advice);
+      setGeminiOutput(await generateComplianceAdvice(geminiKey, summary));
     } catch (err) {
       setGeminiError(err instanceof Error ? err.message : 'Gemini request failed.');
     } finally {
@@ -38,9 +63,7 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
     try {
       const { generateGeminiSyntheticLog } = await import('../services/geminiAdvisor');
       const synthetic = await generateGeminiSyntheticLog(geminiKey);
-      if (synthetic) {
-        onApplySyntheticText(synthetic);
-      }
+      if (synthetic) onApplySyntheticText(synthetic);
     } catch (err) {
       setGeminiError(err instanceof Error ? err.message : 'Gemini synthetic generation failed.');
     } finally {
@@ -49,9 +72,6 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
   };
 
   const hasKey = Boolean(geminiKey.trim());
-  const dpdpHits = summary.counts.AADHAAR + summary.counts.PAN + summary.counts.UPI_ID + summary.counts.PHONE;
-  const pciHits = summary.counts.CREDIT_CARD;
-  const gdprHits = summary.counts.EMAIL + summary.counts.IP_ADDRESS + summary.counts.PHONE;
 
   return (
     <section className="panel" aria-labelledby="gemini-advisor-heading">
@@ -67,23 +87,7 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
         </div>
       </div>
 
-      <div className="reg-grid" aria-label="Regulatory framework impact counts">
-        <div className="reg-card">
-          <span className="stat-label">India DPDP Act / UIDAI</span>
-          <span className="stat-value mono">{dpdpHits}</span>
-          <span className="stat-sub">Aadhaar, PAN, UPI &amp; Mobile</span>
-        </div>
-        <div className="reg-card">
-          <span className="stat-label">PCI-DSS v4.0 Req 3.4</span>
-          <span className="stat-value mono">{pciHits}</span>
-          <span className="stat-sub">Luhn + IIN Payment Cards</span>
-        </div>
-        <div className="reg-card">
-          <span className="stat-label">EU GDPR Art. 4 / 32</span>
-          <span className="stat-value mono">{gdprHits}</span>
-          <span className="stat-sub">Emails, IPv4/IPv6 &amp; Phones</span>
-        </div>
-      </div>
+      <RegulatoryFrameworkGrid summary={summary} />
 
       <div className="policy-grid policy-grid-borderless">
         <div>
@@ -100,27 +104,12 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
             autoComplete="off"
           />
         </div>
-
         <div className="sample-buttons align-end">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void handleGeminiAdvice()}
-            disabled={geminiLoading}
-          >
+          <button type="button" className="btn" onClick={() => void handleGeminiAdvice()} disabled={geminiLoading}>
             <Sparkles size={15} aria-hidden="true" />
-            {geminiLoading
-              ? 'Analyzing...'
-              : hasKey
-                ? 'Analyze Risk Counts with Gemini'
-                : 'Generate Offline Compliance Brief'}
+            {geminiLoading ? 'Analyzing...' : hasKey ? 'Analyze Risk Counts with Gemini' : 'Generate Offline Compliance Brief'}
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void handleGeminiSynthetic()}
-            disabled={geminiLoading || !hasKey}
-          >
+          <button type="button" className="btn" onClick={() => void handleGeminiSynthetic()} disabled={geminiLoading || !hasKey}>
             <Shuffle size={15} aria-hidden="true" />
             Generate Synthetic Fixture via Gemini
           </button>
@@ -132,7 +121,6 @@ export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvi
           {geminiError}
         </p>
       )}
-
       {geminiOutput && <pre className="diff-pre gemini-output">{geminiOutput}</pre>}
     </section>
   );

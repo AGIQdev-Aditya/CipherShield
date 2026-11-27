@@ -1,47 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ParsedCsv, parseCsvRows, redactCsvCells } from '../engine/csvParser';
-import { redactText } from '../engine/redactor';
-import { DetectionOptions, RedactionMode, RedactionResult } from '../types/pii';
-import type { SanitizedCsvBundle, WorkerScanRequest, WorkerScanResponse } from '../workers/scanner.worker';
+import { executeSanitizationPipeline, PipelineInput, PipelineOutput } from '../engine/pipeline';
+import type { WorkerScanRequest, WorkerScanResponse } from '../workers/scanner.worker';
 
 const WORKER_OFFLOAD_CHARS = 8_000;
 const WORKER_TIMEOUT_MS = 2_000;
-
-interface ScannerPipelineInput {
-  text: string;
-  mode: RedactionMode;
-  options: DetectionOptions;
-  neutralizeFormulas: boolean;
-  expectCsv: boolean;
-}
 
 /**
  * Coordinates PII scanning and RFC-4180 CSV redaction seamlessly across main RAM (small inputs)
  * and a dedicated Web Worker with stale-request cancellation and a 2s ReDoS termination watchdog.
  */
-export function useScannerPipeline({
-  text,
-  mode,
-  options,
-  neutralizeFormulas,
-  expectCsv,
-}: ScannerPipelineInput) {
+export function useScannerPipeline(input: PipelineInput) {
+  const { text, mode, options, neutralizeFormulas, expectCsv } = input;
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef<number>(0);
-  const [workerPayload, setWorkerPayload] = useState<{
-    result: RedactionResult;
-    originalCsv: ParsedCsv;
-    sanitizedCsvBundle: SanitizedCsvBundle;
-  } | null>(null);
+  const [workerPayload, setWorkerPayload] = useState<PipelineOutput | null>(null);
   const [workerTimeoutError, setWorkerTimeoutError] = useState<string | null>(null);
 
   const shouldUseWorker =
     typeof Worker !== 'undefined' && (text.length >= WORKER_OFFLOAD_CHARS || options.customRule.enabled);
 
   useEffect(() => {
-    if (!shouldUseWorker) {
-      return;
-    }
+    if (!shouldUseWorker) return;
 
     if (!workerRef.current) {
       workerRef.current = new Worker(new URL('../workers/scanner.worker.ts', import.meta.url), {
@@ -64,7 +43,14 @@ export function useScannerPipeline({
       });
     };
 
+    const handleError = () => {
+      if (requestIdRef.current !== reqId) return;
+      window.clearTimeout(watchdog);
+      setWorkerTimeoutError('Isolated Web Worker scan encountered an execution error.');
+    };
+
     activeWorker.addEventListener('message', handleMessage);
+    activeWorker.addEventListener('error', handleError);
 
     const watchdog = window.setTimeout(() => {
       if (requestIdRef.current === reqId) {
@@ -87,6 +73,7 @@ export function useScannerPipeline({
     return () => {
       window.clearTimeout(watchdog);
       activeWorker.removeEventListener('message', handleMessage);
+      activeWorker.removeEventListener('error', handleError);
     };
   }, [shouldUseWorker, text, mode, options, neutralizeFormulas, expectCsv]);
 
@@ -97,42 +84,16 @@ export function useScannerPipeline({
     };
   }, []);
 
-  const result = useMemo(
-    () => (shouldUseWorker && workerPayload ? workerPayload.result : redactText(text, mode, options)),
-    [shouldUseWorker, workerPayload, text, mode, options],
+  const syncOutput = useMemo(
+    () =>
+      shouldUseWorker && workerPayload
+        ? workerPayload
+        : executeSanitizationPipeline({ text, mode, options, neutralizeFormulas, expectCsv }),
+    [shouldUseWorker, workerPayload, text, mode, options, neutralizeFormulas, expectCsv],
   );
-
-  const originalCsv = useMemo(
-    () => (shouldUseWorker && workerPayload ? workerPayload.originalCsv : parseCsvRows(text, expectCsv)),
-    [shouldUseWorker, workerPayload, text, expectCsv],
-  );
-
-  const sanitizedCsvBundle = useMemo<SanitizedCsvBundle>(() => {
-    if (shouldUseWorker && workerPayload) {
-      return workerPayload.sanitizedCsvBundle;
-    }
-    if (!originalCsv.isTabular) {
-      return { headers: [] as string[], rows: [] as string[][], isTabular: false, parseError: null, serializedCsv: '' };
-    }
-    const { sanitizedHeaders, sanitizedRows, serializedCsv } = redactCsvCells(
-      originalCsv,
-      mode,
-      options,
-      neutralizeFormulas,
-    );
-    return {
-      headers: sanitizedHeaders,
-      rows: sanitizedRows,
-      isTabular: true,
-      parseError: null,
-      serializedCsv,
-    };
-  }, [shouldUseWorker, workerPayload, originalCsv, mode, options, neutralizeFormulas]);
 
   return {
-    result,
-    originalCsv,
-    sanitizedCsvBundle,
+    ...syncOutput,
     shouldUseWorker,
     workerTimeoutError: shouldUseWorker ? workerTimeoutError : null,
   };

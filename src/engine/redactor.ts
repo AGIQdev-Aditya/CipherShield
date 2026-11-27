@@ -26,6 +26,9 @@ export interface SharedPseudonymSession {
   counters: Record<PiiCategory, number>;
 }
 
+/**
+ * Creates an isolated volatile pseudonym ledger spanning either one document or all cells of a CSV.
+ */
 export function createPseudonymSession(): SharedPseudonymSession {
   return {
     ledger: new Map<string, PseudonymMapping>(),
@@ -42,61 +45,93 @@ export function createPseudonymSession(): SharedPseudonymSession {
   };
 }
 
+function maskEmailHandle(value: string): string {
+  const [local = '', domain] = value.split('@');
+  if (!domain) return '[REDACTED]';
+  const head = local.length > 1 ? local.charAt(0) : '*';
+  return `${head}***@${domain}`;
+}
+
+function maskIpValue(value: string): string {
+  if (value.includes(':')) {
+    const head = value.split(':').slice(0, 2).join(':') || '::';
+    return `${head}:XXXX::XXXX`;
+  }
+  const [a = 'XXX', b = 'XXX'] = value.split('.');
+  return `${a}.${b}.XXX.XXX`;
+}
+
+function maskPhoneValue(value: string): string {
+  const { core } = splitPhoneExtension(value);
+  const last4 = core.replace(/\D/g, '').slice(-4);
+  return core.startsWith('+91') ? `+91 XXXXXX${last4}` : `XXXXXX${last4}`;
+}
+
+function maskAadhaarValue(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  const sep = value.includes('-') ? '-' : ' ';
+  return `XXXX${sep}XXXX${sep}${digits.slice(-4)}`;
+}
+
 function partialMaskValue(entity: PiiEntity): string {
   const { category, value } = entity;
-
   switch (category) {
     case 'CREDIT_CARD':
       return value.replace(/\d(?=(?:\D*\d){4})/g, 'X');
-
-    case 'AADHAAR': {
-      const digits = value.replace(/\D/g, '');
-      const last4 = digits.slice(-4);
-      const sep = value.includes('-') ? '-' : ' ';
-      return `XXXX${sep}XXXX${sep}${last4}`;
-    }
-
+    case 'AADHAAR':
+      return maskAadhaarValue(value);
     case 'EMAIL':
-    case 'UPI_ID': {
-      const [local, domain] = value.split('@');
-      if (!domain) return '[REDACTED]';
-      const head = local.length > 1 ? local[0] : '*';
-      return `${head}***@${domain}`;
-    }
-
-    case 'PHONE': {
-      const { core } = splitPhoneExtension(value);
-      const digits = core.replace(/\D/g, '');
-      const last4 = digits.slice(-4);
-      if (core.startsWith('+91')) {
-        return `+91 XXXXXX${last4}`;
-      }
-      return `XXXXXX${last4}`;
-    }
-
+    case 'UPI_ID':
+      return maskEmailHandle(value);
+    case 'PHONE':
+      return maskPhoneValue(value);
     case 'PAN':
-      // Non-re-detecting Indian PAN mask (avoids matching PAN regex on rescan)
-      return `${value[0].toUpperCase()}****${value.slice(5, 9)}${value[9].toUpperCase()}`;
-
-    case 'IP_ADDRESS': {
-      if (value.includes(':')) {
-        const head = value.split(':').slice(0, 2).join(':') || '::';
-        return `${head}:XXXX::XXXX`;
-      }
-      const octets = value.split('.');
-      return `${octets[0]}.${octets[1]}.XXX.XXX`;
-    }
-
+      return `${value.charAt(0).toUpperCase()}****${value.slice(5, 9)}${value.charAt(9).toUpperCase()}`;
+    case 'IP_ADDRESS':
+      return maskIpValue(value);
     case 'CUSTOM':
       return value.length > 3 ? `${value.slice(0, 2)}***${value.slice(-1)}` : '***';
   }
 }
 
-function fullMaskValue(entity: PiiEntity, template: 'generic' | 'typed'): string {
-  if (template === 'typed') {
-    return `[${entity.category}_REDACTED]`;
+function assignPseudonymMapping(
+  session: SharedPseudonymSession,
+  entity: PiiEntity,
+  customLabel: string,
+): PseudonymMapping {
+  const ledgerKey = `${entity.category}:${entity.normalizedKey}`;
+  let mapping = session.ledger.get(ledgerKey);
+
+  if (!mapping) {
+    session.counters[entity.category] += 1;
+    const serial = String(session.counters[entity.category]).padStart(2, '0');
+    const sanitizedCustom = customLabel.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    const prefix = entity.category === 'CUSTOM' && sanitizedCustom ? sanitizedCustom : PSEUDONYM_PREFIX[entity.category];
+
+    mapping = {
+      token: `${prefix}_${serial}`,
+      category: entity.category,
+      normalizedKey: entity.normalizedKey,
+      sampleValue: entity.value,
+      occurrences: 0,
+    };
+    session.ledger.set(ledgerKey, mapping);
   }
-  return '[REDACTED]';
+
+  mapping.occurrences += 1;
+  return mapping;
+}
+
+function resolveReplacement(
+  entity: PiiEntity,
+  mode: RedactionMode,
+  options: DetectionOptions,
+  token: string,
+): string {
+  if (mode === 'full') {
+    return options.fullMaskTemplate === 'typed' ? `[${entity.category}_REDACTED]` : '[REDACTED]';
+  }
+  return mode === 'partial' ? partialMaskValue(entity) : token;
 }
 
 /**
@@ -127,36 +162,8 @@ export function redactText(
       outputChunks.push(unchanged);
     }
 
-    const ledgerKey = `${entity.category}:${entity.normalizedKey}`;
-    let existingMapping = session.ledger.get(ledgerKey);
-
-    if (!existingMapping) {
-      session.counters[entity.category] += 1;
-      const serial = String(session.counters[entity.category]).padStart(2, '0');
-      const customPrefix =
-        entity.category === 'CUSTOM' && options.customRule.label.trim()
-          ? options.customRule.label.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
-          : PSEUDONYM_PREFIX[entity.category];
-
-      existingMapping = {
-        token: `${customPrefix}_${serial}`,
-        category: entity.category,
-        normalizedKey: entity.normalizedKey,
-        sampleValue: entity.value,
-        occurrences: 0,
-      };
-      session.ledger.set(ledgerKey, existingMapping);
-    }
-    existingMapping.occurrences += 1;
-
-    let replacement: string;
-    if (mode === 'full') {
-      replacement = fullMaskValue(entity, options.fullMaskTemplate);
-    } else if (mode === 'partial') {
-      replacement = partialMaskValue(entity);
-    } else {
-      replacement = existingMapping.token;
-    }
+    const mapping = assignPseudonymMapping(session, entity, options.customRule.label);
+    const replacement = resolveReplacement(entity, mode, options, mapping.token);
 
     originalSegments.push({ text: entity.value, entity, replacement });
     sanitizedSegments.push({ text: replacement, entity, replacement });
@@ -172,8 +179,6 @@ export function redactText(
   }
 
   const sanitizedText = outputChunks.join('');
-
-  // Skip post-scan when skipping CSV per-cell overhead OR when zero entities were redacted
   const postScan = skipPostScan || entities.length === 0 ? null : scanTextForPii(sanitizedText, options, true);
   const afterRisk = postScan ? calculateRiskScore(postScan.counts) : { score: 0, level: 'NONE' as const };
 

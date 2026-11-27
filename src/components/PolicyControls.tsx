@@ -1,4 +1,4 @@
-import React, { useId } from 'react';
+import React, { useId, useRef } from 'react';
 import { SlidersHorizontal } from 'lucide-react';
 import { MODE_OPTIONS } from '../engine/dlpTaxonomy';
 import { DetectionOptions, RedactionMode } from '../types/pii';
@@ -11,6 +11,80 @@ interface PolicyControlsProps {
   onChangeMode: (mode: RedactionMode) => void;
   onChangeOptions: React.Dispatch<React.SetStateAction<DetectionOptions>>;
   onChangeAllowlist: (value: string) => void;
+}
+
+function CustomRuleSection({
+  options,
+  customRuleError,
+  onChangeOptions,
+}: {
+  options: DetectionOptions;
+  customRuleError: string | null;
+  onChangeOptions: React.Dispatch<React.SetStateAction<DetectionOptions>>;
+}) {
+  const customLabelId = useId();
+  const customPatternId = useId();
+  const customErrorId = useId();
+
+  return (
+    <div>
+      <div className="custom-rule-head">
+        <label className="checkbox-label bold-label">
+          <input
+            type="checkbox"
+            checked={options.customRule.enabled}
+            onChange={(e) =>
+              onChangeOptions((prev) => ({
+                ...prev,
+                customRule: { ...prev.customRule, enabled: e.target.checked },
+              }))
+            }
+          />
+          <SlidersHorizontal size={15} aria-hidden="true" />
+          Enable Custom Regex Rule
+        </label>
+      </div>
+      <div className="custom-rule-inputs">
+        <div>
+          <label htmlFor={customLabelId} className="visually-hidden">
+            Custom entity label
+          </label>
+          <input
+            id={customLabelId}
+            type="text"
+            className="text-input mono"
+            value={options.customRule.label}
+            onChange={(e) =>
+              onChangeOptions((prev) => ({ ...prev, customRule: { ...prev.customRule, label: e.target.value } }))
+            }
+            placeholder="EMP_ID"
+          />
+        </div>
+        <div>
+          <label htmlFor={customPatternId} className="visually-hidden">
+            Custom regular expression pattern
+          </label>
+          <input
+            id={customPatternId}
+            type="text"
+            className="text-input mono"
+            value={options.customRule.pattern}
+            aria-invalid={Boolean(customRuleError)}
+            aria-describedby={customRuleError ? customErrorId : undefined}
+            onChange={(e) =>
+              onChangeOptions((prev) => ({ ...prev, customRule: { ...prev.customRule, pattern: e.target.value } }))
+            }
+            placeholder="EMP-\d{4,6}"
+          />
+        </div>
+      </div>
+      {customRuleError && (
+        <p id={customErrorId} role="alert" className="alert-error-compact">
+          {customRuleError}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -26,16 +100,25 @@ export function PolicyControls({
   onChangeAllowlist,
 }: PolicyControlsProps) {
   const allowlistInputId = useId();
-  const customLabelId = useId();
-  const customPatternId = useId();
+  const modeButtonRefs = useRef<Record<RedactionMode, HTMLButtonElement | null>>({
+    full: null,
+    partial: null,
+    pseudonymize: null,
+  });
 
   const handleModeKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, currentIdx: number) => {
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-      e.preventDefault();
-      const delta = e.key === 'ArrowRight' ? 1 : -1;
-      const nextIdx = (currentIdx + delta + MODE_OPTIONS.length) % MODE_OPTIONS.length;
-      onChangeMode(MODE_OPTIONS[nextIdx].id);
-    }
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft' && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    const nextIdx =
+      e.key === 'Home'
+        ? 0
+        : e.key === 'End'
+          ? MODE_OPTIONS.length - 1
+          : (currentIdx + (e.key === 'ArrowRight' ? 1 : -1) + MODE_OPTIONS.length) % MODE_OPTIONS.length;
+    const nextOption = MODE_OPTIONS[nextIdx];
+    if (!nextOption) return;
+    onChangeMode(nextOption.id);
+    modeButtonRefs.current[nextOption.id]?.focus();
   };
 
   const activeMode = MODE_OPTIONS.find((m) => m.id === mode);
@@ -48,23 +131,30 @@ export function PolicyControls({
 
       <div className="mode-bar">
         <div className="tablist" role="tablist" aria-label="Redaction mode">
-          {MODE_OPTIONS.map((item, idx) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-label={item.label}
-              aria-selected={mode === item.id}
-              className="mode-tab"
-              onClick={() => onChangeMode(item.id)}
-              onKeyDown={(e) => handleModeKeyDown(e, idx)}
-            >
-              <span>{item.label}</span>
-              <kbd className="keycap keycap-inline" aria-hidden="true">
-                {idx + 1}
-              </kbd>
-            </button>
-          ))}
+          {MODE_OPTIONS.map((item, idx) => {
+            const isSelected = mode === item.id;
+            return (
+              <button
+                key={item.id}
+                ref={(el) => {
+                  modeButtonRefs.current[item.id] = el;
+                }}
+                type="button"
+                role="tab"
+                aria-label={item.label}
+                aria-selected={isSelected}
+                tabIndex={isSelected ? 0 : -1}
+                className="mode-tab"
+                onClick={() => onChangeMode(item.id)}
+                onKeyDown={(e) => handleModeKeyDown(e, idx)}
+              >
+                <span>{item.label}</span>
+                <kbd className="keycap keycap-inline" aria-hidden="true">
+                  {idx + 1}
+                </kbd>
+              </button>
+            );
+          })}
         </div>
 
         <div className="mode-options">
@@ -83,14 +173,11 @@ export function PolicyControls({
               Include category label ([EMAIL_REDACTED])
             </label>
           )}
-
           <label className="checkbox-label">
             <input
               type="checkbox"
               checked={options.strictAadhaarVerhoeff}
-              onChange={(e) =>
-                onChangeOptions((prev) => ({ ...prev, strictAadhaarVerhoeff: e.target.checked }))
-              }
+              onChange={(e) => onChangeOptions((prev) => ({ ...prev, strictAadhaarVerhoeff: e.target.checked }))}
             />
             Strict UIDAI Verhoeff checksum on Aadhaar
           </label>
@@ -115,68 +202,7 @@ export function PolicyControls({
             placeholder="e.g. 127.0.0.1, support@company.com"
           />
         </div>
-
-        <div>
-          <div className="custom-rule-head">
-            <label className="checkbox-label bold-label">
-              <input
-                type="checkbox"
-                checked={options.customRule.enabled}
-                onChange={(e) =>
-                  onChangeOptions((prev) => ({
-                    ...prev,
-                    customRule: { ...prev.customRule, enabled: e.target.checked },
-                  }))
-                }
-              />
-              <SlidersHorizontal size={15} aria-hidden="true" />
-              Enable Custom Regex Rule
-            </label>
-          </div>
-          <div className="custom-rule-inputs">
-            <div>
-              <label htmlFor={customLabelId} className="visually-hidden">
-                Custom entity label
-              </label>
-              <input
-                id={customLabelId}
-                type="text"
-                className="text-input mono"
-                value={options.customRule.label}
-                onChange={(e) =>
-                  onChangeOptions((prev) => ({
-                    ...prev,
-                    customRule: { ...prev.customRule, label: e.target.value },
-                  }))
-                }
-                placeholder="EMP_ID"
-              />
-            </div>
-            <div>
-              <label htmlFor={customPatternId} className="visually-hidden">
-                Custom regular expression pattern
-              </label>
-              <input
-                id={customPatternId}
-                type="text"
-                className="text-input mono"
-                value={options.customRule.pattern}
-                onChange={(e) =>
-                  onChangeOptions((prev) => ({
-                    ...prev,
-                    customRule: { ...prev.customRule, pattern: e.target.value },
-                  }))
-                }
-                placeholder="EMP-\d{4,6}"
-              />
-            </div>
-          </div>
-          {customRuleError && (
-            <p role="alert" className="alert-error-compact">
-              {customRuleError}
-            </p>
-          )}
-        </div>
+        <CustomRuleSection options={options} customRuleError={customRuleError} onChangeOptions={onChangeOptions} />
       </div>
     </section>
   );

@@ -1,6 +1,10 @@
 node_modules
 dist
+coverage
 .git
-tests
-*.md
+.vercel
+*.log
 .DS_Store
+docs
+.env
+.env.*

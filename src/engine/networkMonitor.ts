@@ -45,7 +45,7 @@ export function installNetworkMonitor(
       onUpdate(
         {
           id: seq++,
-          url: urlStr.split('?')[0],
+          url: urlStr.split('?')[0] ?? urlStr,
           transport,
           timestamp: new Date().toLocaleTimeString(),
           isAllowedOrigin: isGemini,

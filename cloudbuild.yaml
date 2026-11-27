@@ -1,23 +1,49 @@
 steps:
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'asia-south1-docker.pkg.dev/$PROJECT_ID/ciphershield/ciphershield:$COMMIT_SHA', '.']
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/ciphershield:$COMMIT_SHA'
+      - '.'
+
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'asia-south1-docker.pkg.dev/$PROJECT_ID/ciphershield/ciphershield:$COMMIT_SHA']
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/ciphershield:$COMMIT_SHA'
+
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'ciphershield'
+      - '${_SERVICE}'
       - '--image'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ciphershield/ciphershield:$COMMIT_SHA'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/ciphershield:$COMMIT_SHA'
       - '--region'
-      - 'asia-south1'
+      - '${_REGION}'
       - '--platform'
       - 'managed'
-      - '--max-instances=3'
+      - '--port'
+      - '8080'
+      - '--memory'
+      - '256Mi'
+      - '--cpu'
+      - '1'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '3'
+      - '--concurrency'
+      - '80'
       - '--allow-unauthenticated'
+
+substitutions:
+  _REGION: 'asia-south1'
+  _REPO: 'ciphershield'
+  _SERVICE: 'ciphershield'
+
 images:
-  - 'asia-south1-docker.pkg.dev/$PROJECT_ID/ciphershield/ciphershield:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/ciphershield:$COMMIT_SHA'
+
 options:
   logging: CLOUD_LOGGING_ONLY

@@ -13,6 +13,44 @@ interface SourceInputPanelProps {
   onClear: () => void;
 }
 
+function DemoPresetDrawer({
+  demoDrawerId,
+  onSelectPreset,
+  onSelectSynthetic,
+}: {
+  demoDrawerId: string;
+  onSelectPreset: (content: string, filename: string) => void;
+  onSelectSynthetic: () => void;
+}) {
+  return (
+    <div id={demoDrawerId} className="demo-drawer" role="region" aria-label="Interactive demo presets">
+      <span className="demo-drawer-label">Load Demo Preset:</span>
+      <div className="sample-buttons">
+        {SAMPLE_DATASETS.map((sample) => (
+          <button
+            key={sample.id}
+            type="button"
+            className="btn btn-compact"
+            onClick={() => onSelectPreset(sample.content, sample.filename)}
+          >
+            <Sparkles size={14} aria-hidden="true" />
+            {sample.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="btn btn-compact"
+          onClick={onSelectSynthetic}
+          title="Generate random Luhn-valid cards, decoy IDs, PAN, Aadhaar, and recurring PII offline"
+        >
+          <Shuffle size={14} aria-hidden="true" />
+          Generate Fresh Chaos
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Input workbench supporting sample loaders, offline synthetic generation, .txt/.csv drag-drop upload, and raw text input.
  */
@@ -30,28 +68,25 @@ export function SourceInputPanel({
   const rawInputId = useId();
   const uploadInputId = useId();
   const demoDrawerId = useId();
+  const uploadErrorId = useId();
 
   const handleFileLoad = async (file: File | undefined) => {
     setUploadError(null);
     if (!file) return;
-
     const lower = file.name.toLowerCase();
     if (!lower.endsWith('.txt') && !lower.endsWith('.csv')) {
       setUploadError('Unsupported file type. Please select a .txt or .csv file.');
       return;
     }
-
     if (file.size > MAX_FILE_BYTES) {
       setUploadError('File exceeds 5 MB client-side safety limit.');
       return;
     }
-
     const content = await file.text();
     if (content.includes('\u0000')) {
       setUploadError('Binary payload rejected. Please upload plain UTF-8 .txt or .csv data.');
       return;
     }
-
     onSelectFixture(content, file.name, lower.endsWith('.csv'));
   };
 
@@ -61,7 +96,6 @@ export function SourceInputPanel({
         <h2 id="input-section-heading" className="section-heading">
           1. Source Data Input
         </h2>
-
         <div className="sample-buttons" role="group" aria-label="Source actions">
           <button
             type="button"
@@ -90,39 +124,19 @@ export function SourceInputPanel({
       </div>
 
       {showDemos && (
-        <div id={demoDrawerId} className="demo-drawer" role="region" aria-label="Interactive demo presets">
-          <span className="demo-drawer-label">Load Demo Preset:</span>
-          <div className="sample-buttons">
-            {SAMPLE_DATASETS.map((sample) => (
-              <button
-                key={sample.id}
-                type="button"
-                className="btn btn-compact"
-                onClick={() => {
-                  setUploadError(null);
-                  setShowDemos(false);
-                  onSelectFixture(sample.content, sample.filename, sample.filename.endsWith('.csv'));
-                }}
-              >
-                <Sparkles size={14} aria-hidden="true" />
-                {sample.label}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="btn btn-compact"
-              onClick={() => {
-                setUploadError(null);
-                setShowDemos(false);
-                onSelectFixture(generateSyntheticChaosLog(), 'synthetic_chaos_log.txt', false);
-              }}
-              title="Generate random Luhn-valid cards, decoy IDs, PAN, Aadhaar, and recurring PII offline"
-            >
-              <Shuffle size={14} aria-hidden="true" />
-              Generate Fresh Chaos
-            </button>
-          </div>
-        </div>
+        <DemoPresetDrawer
+          demoDrawerId={demoDrawerId}
+          onSelectPreset={(content, filename) => {
+            setUploadError(null);
+            setShowDemos(false);
+            onSelectFixture(content, filename, filename.endsWith('.csv'));
+          }}
+          onSelectSynthetic={() => {
+            setUploadError(null);
+            setShowDemos(false);
+            onSelectFixture(generateSyntheticChaosLog(), 'synthetic_chaos_log.txt', false);
+          }}
+        />
       )}
 
       <div
@@ -147,6 +161,7 @@ export function SourceInputPanel({
           type="file"
           accept=".txt,.csv,text/plain,text/csv"
           className="visually-hidden"
+          aria-describedby={uploadError ? uploadErrorId : undefined}
           onChange={(e) => {
             void handleFileLoad(e.target.files?.[0]);
             e.target.value = '';
@@ -158,7 +173,7 @@ export function SourceInputPanel({
       </div>
 
       {uploadError && (
-        <p role="alert" className="alert-error">
+        <p id={uploadErrorId} role="alert" className="alert-error">
           {uploadError}
         </p>
       )}

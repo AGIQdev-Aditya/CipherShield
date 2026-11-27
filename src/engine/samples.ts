@@ -1,3 +1,5 @@
+import { calculateLuhnCheckDigit } from './validators';
+
 export interface SampleDataset {
   id: string;
   label: string;
@@ -55,32 +57,23 @@ Telehealth Session IP: 103.21.124.88`,
   },
 ];
 
+function formatCardQuads(digits: string): string {
+  return `${digits.slice(0, 4)}-${digits.slice(4, 8)}-${digits.slice(8, 12)}-${digits.slice(12, 16)}`;
+}
+
 function buildLuhnValidCard(prefix: string): string {
-  const digits = prefix.split('').map(Number);
-  while (digits.length < 15) {
-    digits.push(Math.floor(Math.random() * 10));
+  let payload = prefix;
+  while (payload.length < 15) {
+    payload += String(Math.floor(Math.random() * 10));
   }
-  let sum = 0;
-  let shouldDouble = true;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    let d = digits[i];
-    if (shouldDouble) {
-      d *= 2;
-      if (d > 9) d -= 9;
-    }
-    sum += d;
-    shouldDouble = !shouldDouble;
-  }
-  const checkDigit = (10 - (sum % 10)) % 10;
-  digits.push(checkDigit);
-  return `${digits.slice(0, 4).join('')}-${digits.slice(4, 8).join('')}-${digits.slice(8, 12).join('')}-${digits.slice(12, 16).join('')}`;
+  const full = `${payload}${calculateLuhnCheckDigit(payload)}`;
+  return formatCardQuads(full);
 }
 
 function buildLuhnInvalid16(): string {
-  const valid = buildLuhnValidCard('4111').replace(/-/g, '');
-  const last = (Number(valid[15]) + 3) % 10;
-  const invalid = valid.slice(0, 15) + String(last);
-  return `${invalid.slice(0, 4)}-${invalid.slice(4, 8)}-${invalid.slice(8, 12)}-${invalid.slice(12, 16)}`;
+  const validDigits = buildLuhnValidCard('4111').replace(/-/g, '');
+  const corruptedLast = (Number(validDigits.charAt(15)) + 3) % 10;
+  return formatCardQuads(validDigits.slice(0, 15) + String(corruptedLast));
 }
 
 /**
@@ -88,18 +81,21 @@ function buildLuhnInvalid16(): string {
  * non-Luhn decoys, Indian PAN, Aadhaar, UPI, IPv4, phones, and duplicated identities.
  */
 export function generateSyntheticChaosLog(): string {
-  const names = ['kiran.rao', 'siddharth.patil', 'neha.verma', 'vikram.menon', 'tanvi.joshi'];
-  const domains = ['cloudpay.in', 'meridian-ops.org', 'medvault.co.in'];
-  const nameA = names[Math.floor(Math.random() * names.length)];
-  const nameB = names[(names.indexOf(nameA) + 2) % names.length];
-  const domain = domains[Math.floor(Math.random() * domains.length)];
+  const names = ['kiran.rao', 'siddharth.patil', 'neha.verma', 'vikram.menon', 'tanvi.joshi'] as const;
+  const domains = ['cloudpay.in', 'meridian-ops.org', 'medvault.co.in'] as const;
+  const aadhaars = ['2341 5678 9120', '3412 8891 4408', '6512 4409 8827'] as const;
+
+  const idxA = Math.floor(Math.random() * names.length);
+  const nameA = names[idxA] ?? 'kiran.rao';
+  const nameB = names[(idxA + 2) % names.length] ?? 'neha.verma';
+  const domain = domains[Math.floor(Math.random() * domains.length)] ?? 'cloudpay.in';
 
   const emailA = `${nameA}@${domain}`;
   const emailB = `${nameB}@${domain}`;
   const phoneA = `+91 ${Math.floor(70000 + Math.random() * 29000)} ${Math.floor(10000 + Math.random() * 89999)}`;
   const rawPhoneA = phoneA.replace('+91 ', '').replace(' ', '');
   const panA = `${String.fromCharCode(65 + Math.floor(Math.random() * 20))}BCPK${Math.floor(1000 + Math.random() * 8999)}M`;
-  const aadhaarValid = ['2341 5678 9120', '3412 8891 4408', '6512 4409 8827'][Math.floor(Math.random() * 3)];
+  const aadhaarValid = aadhaars[Math.floor(Math.random() * aadhaars.length)] ?? '2341 5678 9120';
   const validCard = buildLuhnValidCard(Math.random() > 0.5 ? '4532' : '5425');
   const fakeOrder = buildLuhnInvalid16();
   const ipA = `192.168.${Math.floor(1 + Math.random() * 200)}.${Math.floor(2 + Math.random() * 240)}`;

@@ -4,6 +4,24 @@ const { PhoneNumberFormat, PhoneNumberUtil } = pkg;
 const phoneUtil = PhoneNumberUtil.getInstance();
 
 /**
+ * Computes the Luhn Mod-10 check digit (0-9) for an incomplete card payload prefix.
+ */
+export function calculateLuhnCheckDigit(prefixDigits: string): number {
+  let sum = 0;
+  let shouldDouble = true;
+  for (let i = prefixDigits.length - 1; i >= 0; i--) {
+    let digit = prefixDigits.charCodeAt(i) - 48;
+    if (shouldDouble) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    shouldDouble = !shouldDouble;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+/**
  * Validates a payment card digit sequence using the Luhn (Mod-10) algorithm.
  * Rejects sequences shorter than 13 digits, longer than 19 digits,
  * and trivial repeated-digit strings.
@@ -24,9 +42,7 @@ export function isValidLuhn(rawValue: string): boolean {
     let digit = digits.charCodeAt(i) - 48;
     if (shouldDouble) {
       digit *= 2;
-      if (digit > 9) {
-        digit -= 9;
-      }
+      if (digit > 9) digit -= 9;
     }
     sum += digit;
     shouldDouble = !shouldDouble;
@@ -49,8 +65,7 @@ export function detectCardNetwork(rawValue: string): string | null {
   return null;
 }
 
-// UIDAI Verhoeff multiplication and permutation tables
-const VERHOEFF_D: readonly number[][] = [
+const VERHOEFF_D: readonly (readonly number[])[] = [
   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
   [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
   [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
@@ -63,7 +78,7 @@ const VERHOEFF_D: readonly number[][] = [
   [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
 ];
 
-const VERHOEFF_P: readonly number[][] = [
+const VERHOEFF_P: readonly (readonly number[])[] = [
   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
   [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
   [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
@@ -79,10 +94,7 @@ const VERHOEFF_P: readonly number[][] = [
  */
 export function isValidVerhoeff(rawValue: string): boolean {
   const digits = rawValue.replace(/\D/g, '');
-  if (!/^[2-9]\d{11}$/.test(digits)) {
-    return false;
-  }
-  if (/^(\d)\1+$/.test(digits)) {
+  if (!/^[2-9]\d{11}$/.test(digits) || /^(\d)\1+$/.test(digits)) {
     return false;
   }
 
@@ -90,7 +102,13 @@ export function isValidVerhoeff(rawValue: string): boolean {
   const len = digits.length;
   for (let i = 0; i < len; i++) {
     const digit = digits.charCodeAt(len - 1 - i) - 48;
-    checksum = VERHOEFF_D[checksum][VERHOEFF_P[i % 8][digit]];
+    const permRow = VERHOEFF_P[i % 8];
+    const permDigit = permRow?.[digit];
+    const dRow = VERHOEFF_D[checksum];
+    if (permDigit === undefined || dRow === undefined) return false;
+    const nextChecksum = dRow[permDigit];
+    if (nextChecksum === undefined) return false;
+    checksum = nextChecksum;
   }
   return checksum === 0;
 }
@@ -108,13 +126,19 @@ const PAN_ENTITY_MAP: Record<string, string> = {
   G: 'Government',
 };
 
+/**
+ * Checks whether the 4th PAN character matches an official Income Tax holder classification.
+ */
 export function hasValidPanEntityCode(pan: string): boolean {
   return Boolean(PAN_ENTITY_MAP[pan.charAt(3).toUpperCase()]);
 }
 
+/**
+ * Returns a human-readable PAN holder description from its 4th character code.
+ */
 export function describePanEntity(pan: string): string {
-  const code = pan.charAt(3).toUpperCase();
-  return PAN_ENTITY_MAP[code] ? `PAN (${PAN_ENTITY_MAP[code]})` : 'PAN (Unverified Holder Type)';
+  const holder = PAN_ENTITY_MAP[pan.charAt(3).toUpperCase()];
+  return holder ? `PAN (${holder})` : 'PAN (Unverified Holder Type)';
 }
 
 /**
@@ -143,56 +167,46 @@ export function isValidIPv4(candidate: string): boolean {
   });
 }
 
+function convertTrailingIPv4ToHextets(segments: string[]): string[] | null {
+  const last = segments[segments.length - 1];
+  if (!last || !last.includes('.')) {
+    return [];
+  }
+  segments.pop();
+  if (!isValidIPv4(last)) return null;
+  const [a = 0, b = 0, c = 0, d = 0] = last.split('.').map(Number);
+  return [((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
+}
+
 function parseExpandedIPv6Groups(rawCandidate: string): string[] | null {
   const withoutZone = rawCandidate.split('%')[0];
-  if (!withoutZone.includes(':')) return null;
+  if (!withoutZone || !withoutZone.includes(':')) return null;
 
-  const doubleColonParts = withoutZone.split('::');
-  if (doubleColonParts.length > 2) return null;
+  const parts = withoutZone.split('::');
+  if (parts.length > 2) return null;
 
-  const isCompressed = doubleColonParts.length === 2;
-  const left = doubleColonParts[0] ? doubleColonParts[0].split(':') : [];
-  const right = isCompressed && doubleColonParts[1] ? doubleColonParts[1].split(':') : [];
+  const isCompressed = parts.length === 2;
+  const left = parts[0] ? parts[0].split(':') : [];
+  const right = isCompressed && parts[1] ? parts[1].split(':') : [];
 
-  // Handle IPv4-mapped tail such as ::ffff:192.0.2.1
-  let ipv4TailGroups: string[] = [];
-  if (right.length > 0 && right[right.length - 1].includes('.')) {
-    const ipv4Part = right.pop()!;
-    if (!isValidIPv4(ipv4Part)) return null;
-    const octets = ipv4Part.split('.').map(Number);
-    ipv4TailGroups = [
-      ((octets[0] << 8) | octets[1]).toString(16),
-      ((octets[2] << 8) | octets[3]).toString(16),
-    ];
-  } else if (!isCompressed && left.length > 0 && left[left.length - 1].includes('.')) {
-    const ipv4Part = left.pop()!;
-    if (!isValidIPv4(ipv4Part)) return null;
-    const octets = ipv4Part.split('.').map(Number);
-    ipv4TailGroups = [
-      ((octets[0] << 8) | octets[1]).toString(16),
-      ((octets[2] << 8) | octets[3]).toString(16),
-    ];
-  }
+  const tailTarget = right.length > 0 ? right : !isCompressed ? left : [];
+  const ipv4Tail = convertTrailingIPv4ToHextets(tailTarget);
+  if (ipv4Tail === null) return null;
 
   const hexGroup = /^[0-9a-fA-F]{1,4}$/;
   if (!left.every((g) => hexGroup.test(g)) || !right.every((g) => hexGroup.test(g))) {
     return null;
   }
 
-  const fixedCount = left.length + right.length + ipv4TailGroups.length;
+  const fixedCount = left.length + right.length + ipv4Tail.length;
   if (isCompressed) {
     if (fixedCount > 7) return null;
-    const missing = 8 - fixedCount;
-    return [
-      ...left.map((g) => g.padStart(4, '0').toLowerCase()),
-      ...Array<string>(missing).fill('0000'),
-      ...right.map((g) => g.padStart(4, '0').toLowerCase()),
-      ...ipv4TailGroups.map((g) => g.padStart(4, '0').toLowerCase()),
-    ];
+    const missing = Array<string>(8 - fixedCount).fill('0000');
+    return [...left, ...missing, ...right, ...ipv4Tail].map((g) => g.padStart(4, '0').toLowerCase());
   }
 
   if (fixedCount !== 8) return null;
-  return [...left, ...ipv4TailGroups].map((g) => g.padStart(4, '0').toLowerCase());
+  return [...left, ...ipv4Tail].map((g) => g.padStart(4, '0').toLowerCase());
 }
 
 /**
@@ -204,7 +218,7 @@ export function isValidIPv6(candidate: string): boolean {
 }
 
 /**
- * Normalizes IPv6 variants (e.g. 2001:db8::1 == 2001:0db8:0:0::1) to a canonical form.
+ * Normalizes IPv6 variants (e.g. 2001:db8::1 == 2001:0db8:0:0::1) to canonical 8-hextet form.
  */
 export function canonicalizeIPv6(candidate: string): string {
   const groups = parseExpandedIPv6Groups(candidate);
@@ -224,8 +238,8 @@ export interface ValidatedPhone {
  */
 export function splitPhoneExtension(raw: string): { core: string; extension: string | null } {
   const extMatch = raw.match(/^(.*?)\s*(?:x|ext\.?)\s*(\d{2,5})$/i);
-  if (extMatch) {
-    return { core: extMatch[1].trim(), extension: extMatch[2] };
+  if (extMatch && extMatch[1] !== undefined) {
+    return { core: extMatch[1].trim(), extension: extMatch[2] ?? null };
   }
   return { core: raw.trim(), extension: null };
 }
@@ -233,20 +247,40 @@ export function splitPhoneExtension(raw: string): { core: string; extension: str
 const MAX_PHONE_CACHE = 512;
 const phoneValidationCache = new Map<string, ValidatedPhone | null>();
 
+function tryParseLibPhoneNumber(core: string, extension: string | null): ValidatedPhone | null {
+  const regionsToTry = core.startsWith('+') ? [undefined] : ['IN', 'US', 'GB'];
+  for (const region of regionsToTry) {
+    try {
+      const parsed = phoneUtil.parse(core, region);
+      if (phoneUtil.isValidNumber(parsed)) {
+        const e164 = phoneUtil.format(parsed, PhoneNumberFormat.E164);
+        const rc = phoneUtil.getRegionCodeForNumber(parsed) || 'INTL';
+        return {
+          e164,
+          coreText: core,
+          extension,
+          metadata: `${rc} Phone (Google libphonenumber)`,
+          validatedBy: 'LIBPHONENUMBER',
+        };
+      }
+    } catch {
+      // Try next fallback region
+    }
+  }
+  return null;
+}
+
 /**
- * Validates phone numbers using Google's libphonenumber (with bounded memoization & toll-free fallback).
+ * Validates phone numbers using Google's libphonenumber (with FIFO-bounded memoization & toll-free fallback).
  */
 export function validatePhoneWithGoogleLib(rawValue: string): ValidatedPhone | null {
   const cached = phoneValidationCache.get(rawValue);
-  if (cached !== undefined) {
-    return cached;
-  }
+  if (cached !== undefined) return cached;
 
   const { core, extension } = splitPhoneExtension(rawValue);
   const digitsOnly = core.replace(/\D/g, '');
   let result: ValidatedPhone | null = null;
 
-  // Toll-free numbers (1800-XXX-XXXX / 1-800-XXX-XXXX)
   if (/^(?:1800|1[-.\s]?800)/.test(core) && (digitsOnly.length === 10 || digitsOnly.length === 11)) {
     result = {
       e164: `+${digitsOnly}`,
@@ -256,28 +290,7 @@ export function validatePhoneWithGoogleLib(rawValue: string): ValidatedPhone | n
       validatedBy: 'FORMAT',
     };
   } else {
-    const regionsToTry = core.startsWith('+') ? [undefined] : ['IN', 'US', 'GB'];
-    for (const region of regionsToTry) {
-      try {
-        const parsed = phoneUtil.parse(core, region);
-        if (phoneUtil.isValidNumber(parsed)) {
-          const e164 = phoneUtil.format(parsed, PhoneNumberFormat.E164);
-          const rc = phoneUtil.getRegionCodeForNumber(parsed) || 'INTL';
-          result = {
-            e164,
-            coreText: core,
-            extension,
-            metadata: `${rc} Phone (Google libphonenumber)`,
-            validatedBy: 'LIBPHONENUMBER',
-          };
-          break;
-        }
-      } catch {
-        // Try next region
-      }
-    }
-
-    // Indian STD landline fallback (e.g. 080-45678900, 020-25678901)
+    result = tryParseLibPhoneNumber(core, extension);
     if (!result && /^0[1-9]\d{1,3}[\s.-]?\d{6,8}$/.test(core) && digitsOnly.length >= 10 && digitsOnly.length <= 11) {
       result = {
         e164: `+91${digitsOnly.replace(/^0/, '')}`,
@@ -290,7 +303,8 @@ export function validatePhoneWithGoogleLib(rawValue: string): ValidatedPhone | n
   }
 
   if (phoneValidationCache.size >= MAX_PHONE_CACHE) {
-    phoneValidationCache.clear();
+    const oldestKey = phoneValidationCache.keys().next().value;
+    if (oldestKey !== undefined) phoneValidationCache.delete(oldestKey);
   }
   phoneValidationCache.set(rawValue, result);
   return result;

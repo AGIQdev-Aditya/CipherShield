@@ -9,8 +9,9 @@ const brotliCompressAsync = promisify(zlib.brotliCompress);
 const gzipAsync = promisify(zlib.gzip);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST_DIR = path.resolve(__dirname, 'dist');
-const PORT = Number(process.env.PORT) || 8080;
+export const DEFAULT_DIST_DIR = path.resolve(__dirname, 'dist');
+const DEFAULT_PORT = Number(process.env.PORT) || 8080;
+const MAX_COMPRESSED_CACHE_ENTRIES = 128;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -26,9 +27,11 @@ const MIME_TYPES = {
 };
 
 const COMPRESSIBLE_EXTS = new Set(['.html', '.js', '.css', '.svg', '.json', '.txt']);
-const compressedCache = new Map();
 
-const SECURITY_HEADERS = {
+/**
+ * Production security response headers matching vercel.json CSP and OWASP baseline.
+ */
+export const SECURITY_HEADERS = {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Content-Security-Policy': [
     "default-src 'self'",
@@ -58,156 +61,181 @@ function logCloudJson(severity, message, extra = {}) {
   );
 }
 
-async function getCompressedBody(filePath, rawBuffer, encoding) {
-  const cacheKey = `${filePath}:${encoding}`;
-  if (compressedCache.has(cacheKey)) {
-    return compressedCache.get(cacheKey);
-  }
-  const out =
-    encoding === 'br'
-      ? await brotliCompressAsync(rawBuffer, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
-      : await gzipAsync(rawBuffer);
-  compressedCache.set(cacheKey, out);
-  return out;
+function sendText(res, statusCode, body) {
+  res.writeHead(statusCode, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end(body);
 }
 
-const server = http.createServer(async (req, res) => {
-  const startedAt = Date.now();
-  const traceHeader = req.headers['x-cloud-trace-context'];
-  const traceId = typeof traceHeader === 'string' ? traceHeader.split('/')[0] : undefined;
+function sendHealthz(res, method) {
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  const payload = JSON.stringify({ status: 'ok', service: 'ciphershield', egress: 'client-side-redaction' });
+  res.end(method === 'HEAD' ? undefined : payload);
+}
 
-  if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
-    res.writeHead(405, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
-    res.end('Method Not Allowed');
-    return;
-  }
-
-  let decodedPath;
-  try {
-    decodedPath = decodeURIComponent(req.url.split('?')[0]);
-  } catch {
-    res.writeHead(400, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
-    res.end('Bad Request');
-    return;
-  }
-
-  if (decodedPath === '/healthz') {
-    res.writeHead(200, {
-      ...SECURITY_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store',
-    });
-    res.end(JSON.stringify({ status: 'ok', service: 'ciphershield', egress: 'client-side-redaction' }));
-    return;
-  }
-
+/**
+ * Resolves a requested URL path safely within distDir, enforcing genuine 404s for missing assets.
+ */
+export async function resolveStaticFile(distDir, decodedPath) {
   const normalized = decodedPath.replace(/^\/+/, '');
   const candidate = normalized === '' ? 'index.html' : normalized;
-  let filePath = path.resolve(DIST_DIR, candidate);
-  const rel = path.relative(DIST_DIR, filePath);
+  let filePath = path.resolve(distDir, candidate);
+  const rel = path.relative(distDir, filePath);
 
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
-    res.end('Forbidden');
-    return;
+    return { status: 403, filePath: null };
   }
 
-  let exists = true;
   try {
     const stat = await fs.promises.stat(filePath);
     if (stat.isDirectory()) {
-      filePath = path.join(DIST_DIR, 'index.html');
+      filePath = path.join(distDir, 'index.html');
     }
+    return { status: 200, filePath };
   } catch {
-    exists = false;
-  }
-
-  if (!exists) {
-    // Return genuine 404 for missing assets, dotfiles, or explicit extensions; SPA fallback only for client routes
     if (decodedPath.startsWith('/assets/') || path.extname(decodedPath) !== '' || decodedPath.includes('/.')) {
-      res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
-      res.end('Not Found');
-      return;
+      return { status: 404, filePath: null };
     }
-    filePath = path.join(DIST_DIR, 'index.html');
+    return { status: 200, filePath: path.join(distDir, 'index.html') };
   }
+}
 
-  const ext = path.extname(filePath).toLowerCase();
+function selectPreferredEncoding(acceptEncHeader, ext, contentLength) {
+  if (!COMPRESSIBLE_EXTS.has(ext) || contentLength <= 512) {
+    return null;
+  }
+  const acceptEnc = String(acceptEncHeader || '');
+  if (acceptEnc.includes('br') && !acceptEnc.includes('br;q=0')) return 'br';
+  if (acceptEnc.includes('gzip') && !acceptEnc.includes('gzip;q=0')) return 'gzip';
+  return null;
+}
+
+/**
+ * Compresses asset buffers once with a bounded in-memory LRU cache to keep static delivery flat-latency.
+ */
+async function getCompressedBody(cache, filePath, rawBuffer, encoding) {
+  const cacheKey = `${filePath}:${encoding}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const compressed =
+    encoding === 'br'
+      ? await brotliCompressAsync(rawBuffer, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+      : await gzipAsync(rawBuffer);
+
+  if (cache.size >= MAX_COMPRESSED_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
+  cache.set(cacheKey, compressed);
+  return compressed;
+}
+
+async function serveAssetResponse({
+  req,
+  res,
+  resolvedFilePath,
+  compressedCache,
+}) {
+  const ext = path.extname(resolvedFilePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
   const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
-  const acceptEnc = String(req.headers['accept-encoding'] || '');
+  const rawContent = await fs.promises.readFile(resolvedFilePath);
+  const encoding = selectPreferredEncoding(req.headers['accept-encoding'], ext, rawContent.length);
+  const body = encoding ? await getCompressedBody(compressedCache, resolvedFilePath, rawContent, encoding) : rawContent;
 
-  try {
-    const content = await fs.promises.readFile(filePath);
-
-    if (COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
-      if (acceptEnc.includes('br') && !acceptEnc.includes('br;q=0')) {
-        const compressed = await getCompressedBody(filePath, content, 'br');
-        res.writeHead(200, {
-          ...SECURITY_HEADERS,
-          'Content-Type': contentType,
-          'Content-Encoding': 'br',
-          Vary: 'Accept-Encoding',
-          'Cache-Control': cacheControl,
-        });
-        res.end(req.method === 'HEAD' ? undefined : compressed);
-        return;
-      }
-
-      if (acceptEnc.includes('gzip') && !acceptEnc.includes('gzip;q=0')) {
-        const zipped = await getCompressedBody(filePath, content, 'gzip');
-        res.writeHead(200, {
-          ...SECURITY_HEADERS,
-          'Content-Type': contentType,
-          'Content-Encoding': 'gzip',
-          Vary: 'Accept-Encoding',
-          'Cache-Control': cacheControl,
-        });
-        res.end(req.method === 'HEAD' ? undefined : zipped);
-        return;
-      }
-    }
-
-    res.writeHead(200, {
-      ...SECURITY_HEADERS,
-      'Content-Type': contentType,
-      'Cache-Control': cacheControl,
-    });
-    res.end(req.method === 'HEAD' ? undefined : content);
-  } catch (err) {
-    logCloudJson('ERROR', 'Static asset read failure', {
-      error: String(err),
-      ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
-    });
-    res.writeHead(500, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
-    res.end('Internal Server Error');
-  } finally {
-    if (decodedPath === '/' || res.statusCode >= 400) {
-      logCloudJson('INFO', 'HTTP request served', {
-        httpRequest: {
-          requestMethod: req.method,
-          requestUrl: decodedPath,
-          status: res.statusCode,
-          latency: `${((Date.now() - startedAt) / 1000).toFixed(3)}s`,
-        },
-        ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
-      });
-    }
-  }
-});
-
-server.headersTimeout = 10_000;
-server.requestTimeout = 30_000;
-server.keepAliveTimeout = 65_000;
-
-server.listen(PORT, '0.0.0.0', () => {
-  logCloudJson('INFO', `CipherShield listening on http://0.0.0.0:${PORT}`, { port: PORT });
-});
-
-process.on('SIGTERM', () => {
-  logCloudJson('INFO', 'Received SIGTERM, shutting down gracefully');
-  server.close(() => {
-    process.exit(0);
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': contentType,
+    'Cache-Control': cacheControl,
+    ...(encoding ? { 'Content-Encoding': encoding, Vary: 'Accept-Encoding' } : {}),
   });
-  setTimeout(() => process.exit(0), 8000).unref();
-});
+  res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+/**
+ * Creates a stateless HTTP server serving prebuilt Vite assets for Cloud Run or Node production.
+ */
+export function createAppServer({ distDir = DEFAULT_DIST_DIR, enableRequestLogs = true } = {}) {
+  const compressedCache = new Map();
+
+  const server = http.createServer(async (req, res) => {
+    const startedAt = Date.now();
+    const traceHeader = req.headers['x-cloud-trace-context'];
+    const traceId = typeof traceHeader === 'string' ? traceHeader.split('/')[0] : undefined;
+
+    if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
+      sendText(res, 405, 'Method Not Allowed');
+      return;
+    }
+
+    let decodedPath;
+    try {
+      decodedPath = decodeURIComponent(req.url.split('?')[0] ?? '/');
+    } catch {
+      sendText(res, 400, 'Bad Request');
+      return;
+    }
+
+    if (decodedPath === '/healthz') {
+      sendHealthz(res, req.method);
+      return;
+    }
+
+    const resolved = await resolveStaticFile(distDir, decodedPath);
+    if (resolved.status === 403 || !resolved.filePath) {
+      sendText(res, resolved.status === 403 ? 403 : 404, resolved.status === 403 ? 'Forbidden' : 'Not Found');
+      return;
+    }
+
+    try {
+      await serveAssetResponse({ req, res, resolvedFilePath: resolved.filePath, compressedCache });
+    } catch (err) {
+      if (enableRequestLogs) {
+        logCloudJson('ERROR', 'Static asset read failure', {
+          error: String(err),
+          ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
+        });
+      }
+      sendText(res, 500, 'Internal Server Error');
+    } finally {
+      if (enableRequestLogs && (decodedPath === '/' || res.statusCode >= 400)) {
+        logCloudJson('INFO', 'HTTP request served', {
+          httpRequest: {
+            requestMethod: req.method,
+            requestUrl: decodedPath,
+            status: res.statusCode,
+            latency: `${((Date.now() - startedAt) / 1000).toFixed(3)}s`,
+          },
+          ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
+        });
+      }
+    }
+  });
+
+  server.headersTimeout = 10_000;
+  server.requestTimeout = 30_000;
+  server.keepAliveTimeout = 65_000;
+  return server;
+}
+
+const isMainEntrypoint =
+  Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainEntrypoint) {
+  const server = createAppServer();
+  server.listen(DEFAULT_PORT, '0.0.0.0', () => {
+    logCloudJson('INFO', `CipherShield listening on http://0.0.0.0:${DEFAULT_PORT}`, { port: DEFAULT_PORT });
+  });
+
+  process.on('SIGTERM', () => {
+    logCloudJson('INFO', 'Received SIGTERM, shutting down gracefully');
+    server.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 8000).unref();
+  });
+}

@@ -2,7 +2,7 @@
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Vercel-0ea5e9?style=for-the-badge&logo=vercel)](https://ciphershield-kappa.vercel.app)
 [![Demo Video](https://img.shields.io/badge/Video_Demo-LinkedIn-0a66c2?style=for-the-badge&logo=linkedin)](https://www.linkedin.com/feed/update/urn:li:activity:7532009981341208576/)
-[![Tests](https://img.shields.io/badge/Vitest-29%2F29_Passing-10b981?style=for-the-badge)](./tests)
+[![Tests](https://img.shields.io/badge/Vitest-33%2F33_Passing-10b981?style=for-the-badge)](./tests)
 [![Accessibility](https://img.shields.io/badge/WCAG_axe--core-0_Violations_(4_Tabs)-10b981?style=for-the-badge)](./tests/ui.test.tsx)
 [![Security](https://img.shields.io/badge/npm_audit-0_Vulnerabilities-059669?style=for-the-badge)](./server.js)
 
@@ -87,7 +87,7 @@ flowchart LR
 ```bash
 npm install     # Install dependencies
 npm run lint    # ESLint + TypeScript + eslint-plugin-jsx-a11y (0 errors, 0 warnings)
-npm test        # 29 Vitest unit, ReDoS, AES-GCM AAD, CSV, UI & axe-core WCAG tests
+npm test        # 33 Vitest server, engine, ReDoS, AES-GCM AAD, CSV, UI & axe-core WCAG tests
 npm run build   # Strict tsc --noEmit + Vite production + Web Worker build
 npm start       # Serves dist/ on 0.0.0.0:8080 with async Brotli/gzip & strict CSP
 ```
