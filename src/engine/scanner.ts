@@ -185,315 +185,281 @@ export function calculateRiskScore(counts: Record<PiiCategory, number>): {
   return { score, level };
 }
 
-/**
- * Executes a deterministic, client-side PII scan with Luhn/Verhoeff/Google libphonenumber checks,
- * context disambiguation, allowlisting, and non-overlapping interval merging.
- */
-export function scanTextForPii(
+type RawMatch = Omit<PiiEntity, 'id'>;
+type TextSpan = { start: number; end: number };
+
+function isInsideBlockedSpan(spans: TextSpan[], start: number, end: number): boolean {
+  return spans.some((b) => start >= b.start && end <= b.end);
+}
+
+function collectCardMatches(
   text: string,
-  options: DetectionOptions = DEFAULT_DETECTION_OPTIONS,
-  skipResidualCheck = false,
-): ScanResult {
-  const startTime = performance.now();
-  const rawMatches: Omit<PiiEntity, 'id'>[] = [];
-  const rejectedCards: RejectedCandidate[] = [];
-  const blockedSubSpans: Array<{ start: number; end: number }> = [];
-  let customRuleError: string | null = null;
-
-  const allowSet = new Set(
-    options.allowlist.map((entry) => entry.trim().toLowerCase()).filter(Boolean),
-  );
-
-  // 1. Credit Cards (Luhn Mod-10 + IMEI/non-card IIN check + trailing CVV retry)
-  if (options.enabledCategories.CREDIT_CARD) {
-    const seenCardSpans = new Set<string>();
-    for (const regex of [REGEX_CARD_FORMATTED, REGEX_CARD_CONTIGUOUS]) {
-      regex.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = regex.exec(text)) !== null) {
-        // Ensure match doesn't contain newlines
-        if (m[0].includes('\n') || m[0].includes('\r')) continue;
-
-        let value = m[0];
-        const start = m.index;
-        let end = start + value.length;
-
-        const contextBefore = text.slice(Math.max(0, start - 24), start).toLowerCase();
-        if (/\bimei\b|\biccid\b|\bserial\b/.test(contextBefore)) {
-          rejectedCards.push({ value, reason: 'Device IMEI/ICCID context excluded', start, end });
-          blockedSubSpans.push({ start, end });
-          continue;
-        }
-
-        // If a formatted candidate has trailing CVV digits (e.g., "4532 0151 1283 0366 123") and fails Luhn,
-        // retry stripping the trailing short group before rejecting.
-        if (!isValidLuhn(value) && /[-\s.\u00A0]\d{1,3}$/.test(value)) {
-          const trimmedVal = value.replace(/[-\s.\u00A0]\d{1,3}$/, '');
-          if (isValidLuhn(trimmedVal)) {
-            value = trimmedVal;
-            end = start + value.length;
-          }
-        }
-
-        const spanKey = `${start}:${end}`;
-        if (seenCardSpans.has(spanKey)) continue;
-        seenCardSpans.add(spanKey);
-
-        if (isValidLuhn(value)) {
-          const network = detectCardNetwork(value);
-          if (network) {
-            rawMatches.push({
-              category: 'CREDIT_CARD',
-              value,
-              normalizedKey: normalizeKey('CREDIT_CARD', value),
-              start,
-              end,
-              confidence: 'HIGH',
-              metadata: network,
-              validatedBy: 'LUHN',
-            });
-          } else {
-            rejectedCards.push({ value, reason: 'Passed Luhn but unmatched card network IIN', start, end });
-            blockedSubSpans.push({ start, end });
-          }
-        } else {
-          rejectedCards.push({ value, reason: 'Failed Luhn Mod-10 checksum', start, end });
-          blockedSubSpans.push({ start, end });
-        }
-      }
-    }
-  }
-
-  // 2. Emails
-  if (options.enabledCategories.EMAIL) {
-    REGEX_EMAIL.lastIndex = 0;
+  rawMatches: RawMatch[],
+  rejectedCards: RejectedCandidate[],
+  blockedSubSpans: TextSpan[],
+): void {
+  const seenCardSpans = new Set<string>();
+  for (const regex of [REGEX_CARD_FORMATTED, REGEX_CARD_CONTIGUOUS]) {
+    regex.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = REGEX_EMAIL.exec(text)) !== null) {
-      if (!isValidEmailStrict(m[0])) continue;
-      rawMatches.push({
-        category: 'EMAIL',
-        value: m[0],
-        normalizedKey: normalizeKey('EMAIL', m[0]),
-        start: m.index,
-        end: m.index + m[0].length,
-        confidence: 'HIGH',
-        metadata: 'Email Address',
-        validatedBy: 'RFC',
-      });
-    }
-  }
+    while ((m = regex.exec(text)) !== null) {
+      if (m[0].includes('\n') || m[0].includes('\r')) continue;
 
-  // 3. Indian UPI VPAs
-  if (options.enabledCategories.UPI_ID) {
-    REGEX_UPI.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = REGEX_UPI.exec(text)) !== null) {
-      rawMatches.push({
-        category: 'UPI_ID',
-        value: m[0],
-        normalizedKey: normalizeKey('UPI_ID', m[0]),
-        start: m.index,
-        end: m.index + m[0].length,
-        confidence: 'HIGH',
-        metadata: 'Indian UPI Handle',
-        validatedBy: 'FORMAT',
-      });
-    }
-  }
-
-  // 4. IPv4 & IPv6 (including ::1, ::, and IPv4-mapped ::ffff:192.0.2.1)
-  if (options.enabledCategories.IP_ADDRESS) {
-    REGEX_IPV6.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = REGEX_IPV6.exec(text)) !== null) {
-      if (isValidIPv6(m[0])) {
-        rawMatches.push({
-          category: 'IP_ADDRESS',
-          value: m[0],
-          normalizedKey: normalizeKey('IP_ADDRESS', m[0]),
-          start: m.index,
-          end: m.index + m[0].length,
-          confidence: 'HIGH',
-          metadata: 'IPv6 Address',
-          validatedBy: 'IPV6_PARSER',
-        });
-      }
-    }
-
-    REGEX_IPV4.lastIndex = 0;
-    while ((m = REGEX_IPV4.exec(text)) !== null) {
-      const prevChar = m.index > 0 ? text[m.index - 1] : '';
-      if ((prevChar === 'v' || prevChar === 'V') && /[\s:/([]/.test(text[m.index - 2] ?? ' ')) {
-        continue;
-      }
-      if (isValidIPv4(m[0])) {
-        rawMatches.push({
-          category: 'IP_ADDRESS',
-          value: m[0],
-          normalizedKey: normalizeKey('IP_ADDRESS', m[0]),
-          start: m.index,
-          end: m.index + m[0].length,
-          confidence: 'HIGH',
-          metadata: 'IPv4 Address',
-          validatedBy: 'OCTET',
-        });
-      }
-    }
-  }
-
-  // 5. Indian Aadhaar (suppress sub-spans inside Luhn-rejected 16-digit blocks & handle 91+mobile collision)
-  if (options.enabledCategories.AADHAAR) {
-    REGEX_AADHAAR.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = REGEX_AADHAAR.exec(text)) !== null) {
+      let value = m[0];
       const start = m.index;
-      const end = start + m[0].length;
-      if (blockedSubSpans.some((b) => start >= b.start && end <= b.end)) {
+      let end = start + value.length;
+
+      const contextBefore = text.slice(Math.max(0, start - 24), start).toLowerCase();
+      if (/\bimei\b|\biccid\b|\bserial\b/.test(contextBefore)) {
+        rejectedCards.push({ value, reason: 'Device IMEI/ICCID context excluded', start, end });
+        blockedSubSpans.push({ start, end });
         continue;
       }
 
-      const compact = m[0].replace(/\D/g, '');
-      const contextBefore = text.slice(Math.max(0, start - 20), start).toLowerCase();
-      // Contiguous 91 + 10-digit Indian mobile should be classified as PHONE, not Aadhaar
-      if (!m[0].includes(' ') && !m[0].includes('-') && /^91[6-9]\d{9}$/.test(compact) && !/aadhaar|uid/.test(contextBefore)) {
-        const phoneCheck = validatePhoneWithGoogleLib(`+${compact}`);
-        if (phoneCheck && options.enabledCategories.PHONE) {
-          rawMatches.push({
-            category: 'PHONE',
-            value: m[0],
-            normalizedKey: normalizeKey('PHONE', m[0], phoneCheck.e164),
-            start,
-            end,
-            confidence: 'MEDIUM',
-            metadata: phoneCheck.metadata,
-            validatedBy: phoneCheck.validatedBy,
-          });
-          continue;
+      if (!isValidLuhn(value) && /[-\s.\u00A0]\d{1,3}$/.test(value)) {
+        const trimmedVal = value.replace(/[-\s.\u00A0]\d{1,3}$/, '');
+        if (isValidLuhn(trimmedVal)) {
+          value = trimmedVal;
+          end = start + value.length;
         }
       }
 
-      const verhoeffPass = isValidVerhoeff(m[0]);
-      if (options.strictAadhaarVerhoeff && !verhoeffPass) {
+      const spanKey = `${start}:${end}`;
+      if (seenCardSpans.has(spanKey)) continue;
+      seenCardSpans.add(spanKey);
+
+      if (!isValidLuhn(value)) {
+        rejectedCards.push({ value, reason: 'Failed Luhn Mod-10 checksum', start, end });
+        blockedSubSpans.push({ start, end });
+        continue;
+      }
+
+      const network = detectCardNetwork(value);
+      if (!network) {
+        rejectedCards.push({ value, reason: 'Passed Luhn but unmatched card network IIN', start, end });
+        blockedSubSpans.push({ start, end });
         continue;
       }
 
       rawMatches.push({
-        category: 'AADHAAR',
-        value: m[0],
-        normalizedKey: normalizeKey('AADHAAR', m[0]),
-        start,
-        end,
-        confidence: verhoeffPass ? 'HIGH' : 'MEDIUM',
-        metadata: verhoeffPass ? 'Aadhaar (Verhoeff OK)' : 'Aadhaar Format (Unverified)',
-        validatedBy: verhoeffPass ? 'VERHOEFF' : 'FORMAT',
-      });
-    }
-  }
-
-  // 6. Indian PAN (Consistent holder-type code + context validation across all casings)
-  if (options.enabledCategories.PAN) {
-    REGEX_PAN.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = REGEX_PAN.exec(text)) !== null) {
-      const value = m[0];
-      const isUpper = value === value.toUpperCase();
-      const validCode = hasValidPanEntityCode(value);
-      const rawWindow = text.slice(Math.max(0, m.index - 24), m.index);
-      const localClause = (rawWindow.split(/[\n,;|]/).pop() ?? '').toLowerCase();
-      const hasPanContext = /\b(?:pan|tax|kyc|tin|nsdl|income)\b/.test(localClause);
-
-      // Require valid 4th-char ITD holder code (P/C/H/A/B/G/J/L/F/T), or explicit local PAN context;
-      // lowercase/mixed-case always require both valid holder code and explicit context.
-      if (isUpper) {
-        if (!validCode && !hasPanContext) continue;
-      } else if (!validCode || !hasPanContext) {
-        continue;
-      }
-
-      rawMatches.push({
-        category: 'PAN',
+        category: 'CREDIT_CARD',
         value,
-        normalizedKey: normalizeKey('PAN', value),
-        start: m.index,
-        end: m.index + value.length,
-        confidence: validCode ? 'HIGH' : 'MEDIUM',
-        metadata: validCode ? describePanEntity(value) : 'PAN Context Match (Non-standard 4th char)',
-        validatedBy: 'FORMAT',
-      });
-    }
-  }
-
-  // 7. Phone Numbers validated via Google libphonenumber
-  if (options.enabledCategories.PHONE) {
-    REGEX_PHONE_CANDIDATE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = REGEX_PHONE_CANDIDATE.exec(text)) !== null) {
-      const start = m.index;
-      const end = start + m[0].length;
-      if (/^(?:\d{4}[-.]\d{2}[-.]\d{2}|\d{2}[-./]\d{2}[-./]\d{4})$/.test(m[0])) continue;
-      if (blockedSubSpans.some((b) => start >= b.start && end <= b.end)) continue;
-
-      const validated = validatePhoneWithGoogleLib(m[0]);
-      if (!validated) continue;
-
-      rawMatches.push({
-        category: 'PHONE',
-        value: m[0],
-        normalizedKey: normalizeKey('PHONE', m[0], validated.e164),
+        normalizedKey: normalizeKey('CREDIT_CARD', value),
         start,
         end,
         confidence: 'HIGH',
-        metadata: validated.metadata,
-        validatedBy: validated.validatedBy,
+        metadata: network,
+        validatedBy: 'LUHN',
       });
     }
   }
+}
 
-  // 8. Custom Regex Rule (ReDoS hardened)
-  if (options.customRule.enabled && options.customRule.pattern.trim()) {
-    const patternStr = options.customRule.pattern.trim();
-    const safetyIssue = hasUnsafeRegexConstruct(patternStr);
-    if (safetyIssue) {
-      customRuleError = safetyIssue;
-    } else {
-      try {
-        const customRegex = new RegExp(patternStr, 'g');
-        const customStart = performance.now();
-        let m: RegExpExecArray | null;
-        let guard = 0;
-        while ((m = customRegex.exec(text)) !== null && guard < 2000) {
-          guard += 1;
-          if (guard % 25 === 0 && performance.now() - customStart > 40) {
-            customRuleError = 'Custom RegExp aborted: exceeded 40ms ReDoS execution budget.';
-            break;
-          }
-          if (m[0].length === 0) {
-            customRegex.lastIndex += 1;
-            continue;
-          }
-          rawMatches.push({
-            category: 'CUSTOM',
-            value: m[0],
-            normalizedKey: normalizeKey('CUSTOM', m[0]),
-            start: m.index,
-            end: m.index + m[0].length,
-            confidence: 'HIGH',
-            metadata: options.customRule.label.trim() || 'Custom Pattern',
-            validatedBy: 'CUSTOM',
-          });
-        }
-      } catch {
-        customRuleError = 'Invalid custom RegExp syntax.';
+function collectPatternMatches(
+  text: string,
+  regex: RegExp,
+  category: PiiCategory,
+  metadata: string,
+  validatedBy: PiiEntity['validatedBy'],
+  rawMatches: RawMatch[],
+  validate?: (val: string) => boolean,
+): void {
+  regex.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(text)) !== null) {
+    if (validate && !validate(m[0])) continue;
+    rawMatches.push({
+      category,
+      value: m[0],
+      normalizedKey: normalizeKey(category, m[0]),
+      start: m.index,
+      end: m.index + m[0].length,
+      confidence: 'HIGH',
+      metadata,
+      validatedBy,
+    });
+  }
+}
+
+function collectIpMatches(text: string, rawMatches: RawMatch[]): void {
+  collectPatternMatches(text, REGEX_IPV6, 'IP_ADDRESS', 'IPv6 Address', 'IPV6_PARSER', rawMatches, isValidIPv6);
+
+  REGEX_IPV4.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = REGEX_IPV4.exec(text)) !== null) {
+    const prevChar = m.index > 0 ? text[m.index - 1] : '';
+    if ((prevChar === 'v' || prevChar === 'V') && /[\s:/([]/.test(text[m.index - 2] ?? ' ')) {
+      continue;
+    }
+    if (!isValidIPv4(m[0])) continue;
+    rawMatches.push({
+      category: 'IP_ADDRESS',
+      value: m[0],
+      normalizedKey: normalizeKey('IP_ADDRESS', m[0]),
+      start: m.index,
+      end: m.index + m[0].length,
+      confidence: 'HIGH',
+      metadata: 'IPv4 Address',
+      validatedBy: 'OCTET',
+    });
+  }
+}
+
+function collectAadhaarMatches(
+  text: string,
+  options: DetectionOptions,
+  blockedSubSpans: TextSpan[],
+  rawMatches: RawMatch[],
+): void {
+  REGEX_AADHAAR.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = REGEX_AADHAAR.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (isInsideBlockedSpan(blockedSubSpans, start, end)) continue;
+
+    const compact = m[0].replace(/\D/g, '');
+    const contextBefore = text.slice(Math.max(0, start - 20), start).toLowerCase();
+    // Contiguous 91 + 10-digit Indian mobile should be classified as PHONE, not Aadhaar
+    if (!m[0].includes(' ') && !m[0].includes('-') && /^91[6-9]\d{9}$/.test(compact) && !/aadhaar|uid/.test(contextBefore)) {
+      const phoneCheck = validatePhoneWithGoogleLib(`+${compact}`);
+      if (phoneCheck && options.enabledCategories.PHONE) {
+        rawMatches.push({
+          category: 'PHONE',
+          value: m[0],
+          normalizedKey: normalizeKey('PHONE', m[0], phoneCheck.e164),
+          start,
+          end,
+          confidence: 'MEDIUM',
+          metadata: phoneCheck.metadata,
+          validatedBy: phoneCheck.validatedBy,
+        });
+        continue;
       }
     }
-  }
 
-  // Filter allowlisted items
+    const verhoeffPass = isValidVerhoeff(m[0]);
+    if (options.strictAadhaarVerhoeff && !verhoeffPass) continue;
+
+    rawMatches.push({
+      category: 'AADHAAR',
+      value: m[0],
+      normalizedKey: normalizeKey('AADHAAR', m[0]),
+      start,
+      end,
+      confidence: verhoeffPass ? 'HIGH' : 'MEDIUM',
+      metadata: verhoeffPass ? 'Aadhaar (Verhoeff OK)' : 'Aadhaar Format (Unverified)',
+      validatedBy: verhoeffPass ? 'VERHOEFF' : 'FORMAT',
+    });
+  }
+}
+
+function collectPanMatches(text: string, rawMatches: RawMatch[]): void {
+  REGEX_PAN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = REGEX_PAN.exec(text)) !== null) {
+    const value = m[0];
+    const isUpper = value === value.toUpperCase();
+    const validCode = hasValidPanEntityCode(value);
+    const rawWindow = text.slice(Math.max(0, m.index - 24), m.index);
+    const localClause = (rawWindow.split(/[\n,;|]/).pop() ?? '').toLowerCase();
+    const hasPanContext = /\b(?:pan|tax|kyc|tin|nsdl|income)\b/.test(localClause);
+
+    if (isUpper) {
+      if (!validCode && !hasPanContext) continue;
+    } else if (!validCode || !hasPanContext) {
+      continue;
+    }
+
+    rawMatches.push({
+      category: 'PAN',
+      value,
+      normalizedKey: normalizeKey('PAN', value),
+      start: m.index,
+      end: m.index + value.length,
+      confidence: validCode ? 'HIGH' : 'MEDIUM',
+      metadata: validCode ? describePanEntity(value) : 'PAN Context Match (Non-standard 4th char)',
+      validatedBy: 'FORMAT',
+    });
+  }
+}
+
+function collectPhoneMatches(text: string, blockedSubSpans: TextSpan[], rawMatches: RawMatch[]): void {
+  REGEX_PHONE_CANDIDATE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = REGEX_PHONE_CANDIDATE.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (/^(?:\d{4}[-.]\d{2}[-.]\d{2}|\d{2}[-./]\d{2}[-./]\d{4})$/.test(m[0])) continue;
+    if (isInsideBlockedSpan(blockedSubSpans, start, end)) continue;
+
+    const validated = validatePhoneWithGoogleLib(m[0]);
+    if (!validated) continue;
+
+    rawMatches.push({
+      category: 'PHONE',
+      value: m[0],
+      normalizedKey: normalizeKey('PHONE', m[0], validated.e164),
+      start,
+      end,
+      confidence: 'HIGH',
+      metadata: validated.metadata,
+      validatedBy: validated.validatedBy,
+    });
+  }
+}
+
+function collectCustomRuleMatches(
+  text: string,
+  options: DetectionOptions,
+  rawMatches: RawMatch[],
+): string | null {
+  const patternStr = options.customRule.pattern.trim();
+  if (!patternStr) return null;
+
+  const safetyIssue = hasUnsafeRegexConstruct(patternStr);
+  if (safetyIssue) return safetyIssue;
+
+  try {
+    const customRegex = new RegExp(patternStr, 'g');
+    const customStart = performance.now();
+    let m: RegExpExecArray | null;
+    let guard = 0;
+    while ((m = customRegex.exec(text)) !== null && guard < 2000) {
+      guard += 1;
+      if (guard % 25 === 0 && performance.now() - customStart > 40) {
+        return 'Custom RegExp aborted: exceeded 40ms ReDoS execution budget.';
+      }
+      if (m[0].length === 0) {
+        customRegex.lastIndex += 1;
+        continue;
+      }
+      rawMatches.push({
+        category: 'CUSTOM',
+        value: m[0],
+        normalizedKey: normalizeKey('CUSTOM', m[0]),
+        start: m.index,
+        end: m.index + m[0].length,
+        confidence: 'HIGH',
+        metadata: options.customRule.label.trim() || 'Custom Pattern',
+        validatedBy: 'CUSTOM',
+      });
+    }
+  } catch {
+    return 'Invalid custom RegExp syntax.';
+  }
+  return null;
+}
+
+function resolveNonOverlappingEntities(
+  textLength: number,
+  rawMatches: RawMatch[],
+  allowSet: Set<string>,
+): { entities: PiiEntity[]; allowlistedCount: number } {
   let allowlistedCount = 0;
   const nonAllowlisted = rawMatches.filter((item) => {
-    const valLower = item.value.trim().toLowerCase();
-    const keyLower = item.normalizedKey.toLowerCase();
-    const isAllowed = allowSet.has(valLower) || allowSet.has(keyLower);
+    const isAllowed =
+      allowSet.has(item.value.trim().toLowerCase()) || allowSet.has(item.normalizedKey.toLowerCase());
     if (isAllowed) {
       allowlistedCount += 1;
       return false;
@@ -501,7 +467,7 @@ export function scanTextForPii(
     return true;
   });
 
-  // Deterministic overlap resolution by priority, length, earliest start
+  // Sort by category priority desc, span length desc, start asc
   nonAllowlisted.sort((a, b) => {
     const prioDiff = CATEGORY_PRIORITY[b.category] - CATEGORY_PRIORITY[a.category];
     if (prioDiff !== 0) return prioDiff;
@@ -510,22 +476,55 @@ export function scanTextForPii(
     return a.start - b.start;
   });
 
-  const accepted: Omit<PiiEntity, 'id'>[] = [];
+  // O(span_length) interval bitmap avoids O(N^2) slowdown on multi-MB logs
+  const covered = new Uint8Array(textLength);
+  const accepted: RawMatch[] = [];
   for (const candidate of nonAllowlisted) {
-    const overlaps = accepted.some(
-      (existing) => !(candidate.end <= existing.start || candidate.start >= existing.end),
-    );
+    let overlaps = false;
+    for (let i = candidate.start; i < candidate.end; i++) {
+      if (covered[i]) {
+        overlaps = true;
+        break;
+      }
+    }
     if (!overlaps) {
+      covered.fill(1, candidate.start, candidate.end);
       accepted.push(candidate);
     }
   }
 
   accepted.sort((a, b) => a.start - b.start);
+  const entities = accepted.map((item, idx) => ({ ...item, id: `pii-${idx + 1}` }));
+  return { entities, allowlistedCount };
+}
 
-  const entities: PiiEntity[] = accepted.map((item, idx) => ({
-    ...item,
-    id: `pii-${idx + 1}`,
-  }));
+/**
+ * Executes a deterministic, client-side PII scan with Luhn/Verhoeff/Google libphonenumber checks,
+ * context disambiguation, allowlisting, and linear-time overlap resolution.
+ */
+export function scanTextForPii(
+  text: string,
+  options: DetectionOptions = DEFAULT_DETECTION_OPTIONS,
+  skipResidualCheck = false,
+): ScanResult {
+  const startTime = performance.now();
+  const rawMatches: RawMatch[] = [];
+  const rejectedCards: RejectedCandidate[] = [];
+  const blockedSubSpans: TextSpan[] = [];
+
+  const allowSet = new Set(options.allowlist.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
+  const enabled = options.enabledCategories;
+
+  if (enabled.CREDIT_CARD) collectCardMatches(text, rawMatches, rejectedCards, blockedSubSpans);
+  if (enabled.EMAIL) collectPatternMatches(text, REGEX_EMAIL, 'EMAIL', 'Email Address', 'RFC', rawMatches, isValidEmailStrict);
+  if (enabled.UPI_ID) collectPatternMatches(text, REGEX_UPI, 'UPI_ID', 'Indian UPI Handle', 'FORMAT', rawMatches);
+  if (enabled.IP_ADDRESS) collectIpMatches(text, rawMatches);
+  if (enabled.AADHAAR) collectAadhaarMatches(text, options, blockedSubSpans, rawMatches);
+  if (enabled.PAN) collectPanMatches(text, rawMatches);
+  if (enabled.PHONE) collectPhoneMatches(text, blockedSubSpans, rawMatches);
+
+  const customRuleError = options.customRule.enabled ? collectCustomRuleMatches(text, options, rawMatches) : null;
+  const { entities, allowlistedCount } = resolveNonOverlappingEntities(text.length, rawMatches, allowSet);
 
   const counts: Record<PiiCategory, number> = {
     EMAIL: 0,
@@ -537,7 +536,6 @@ export function scanTextForPii(
     UPI_ID: 0,
     CUSTOM: 0,
   };
-
   for (const entity of entities) {
     counts[entity.category] += 1;
   }
@@ -545,7 +543,6 @@ export function scanTextForPii(
   const filteredRejected = rejectedCards.filter(
     (rej) => !entities.some((e) => !(rej.end <= e.start || rej.start >= e.end)),
   );
-
   const beforeRisk = calculateRiskScore(counts);
 
   return {

@@ -6,19 +6,18 @@ import { HeaderBar } from './components/HeaderBar';
 import { MetricsOverview } from './components/MetricsOverview';
 import { PolicyControls } from './components/PolicyControls';
 import { PromptLogModal } from './components/PromptLogModal';
+import { SelfTestPanel } from './components/SelfTestPanel';
 import { SideBySideDiff } from './components/SideBySideDiff';
 import { SourceInputPanel } from './components/SourceInputPanel';
-import { parseCsvRows, ParsedCsv, redactCsvCells } from './engine/csvParser';
+import { TelemetryStrip } from './components/TelemetryStrip';
 import { buildCloudDlpDeidentifyConfig, buildCloudDlpSummary } from './engine/dlpTaxonomy';
 import { installNetworkMonitor, NetworkMonitorState } from './engine/networkMonitor';
-import { redactText, sha256Hex } from './engine/redactor';
+import { sha256Hex } from './engine/redactor';
 import { DEFAULT_DETECTION_OPTIONS } from './engine/scanner';
 import { runAdversarialSelfTest, SelfTestReport } from './engine/selfTest';
+import { useScannerPipeline } from './hooks/useScannerPipeline';
 import type { SafeScanSummary } from './services/geminiAdvisor';
-import { DetectionOptions, PiiCategory, RedactionMode, RedactionResult } from './types/pii';
-import type { SanitizedCsvBundle, WorkerScanRequest, WorkerScanResponse } from './workers/scanner.worker';
-
-const WORKER_OFFLOAD_CHARS = 8_000;
+import { DetectionOptions, PiiCategory, RedactionMode } from './types/pii';
 
 type WorkspaceTab = 'studio' | 'vault' | 'proof' | 'gemini';
 
@@ -35,8 +34,8 @@ const WORKSPACE_TABS: { id: WorkspaceTab; label: string; shortcut: string }[] = 
 ];
 
 /**
- * Root CipherShield workbench featuring layered cyber navy/sapphire theming,
- * gliding workspace navigation tabs, Web Worker + RAM scanning, and on-demand demo/diagnostics.
+ * Root CipherShield workbench coordinating workspace navigation,
+ * deferred Web Worker PII scanning, zero-egress network monitoring, and audit exports.
  */
 export default function App() {
   const [rawText, setRawText] = useState<string>('');
@@ -60,7 +59,6 @@ export default function App() {
   });
 
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const navTabsRef = useRef<HTMLDivElement>(null);
   const navSliderRef = useRef<HTMLSpanElement>(null);
   const tabRefs = useRef<Record<WorkspaceTab, HTMLButtonElement | null>>({
     studio: null,
@@ -68,8 +66,7 @@ export default function App() {
     proof: null,
     gemini: null,
   });
-  const workerRef = useRef<Worker | null>(null);
-  const requestIdRef = useRef<number>(0);
+
   const deferredText = useDeferredValue(rawText);
   const expectCsv = sourceFilename.toLowerCase().endsWith('.csv') || diffViewMode === 'csv';
 
@@ -78,81 +75,27 @@ export default function App() {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    return {
-      ...options,
-      allowlist: parsedAllowlist,
-    };
+    return { ...options, allowlist: parsedAllowlist };
   }, [options, allowlistText]);
 
-  const shouldUseWorker =
-    typeof Worker !== 'undefined' &&
-    (deferredText.length >= WORKER_OFFLOAD_CHARS || effectiveOptions.customRule.enabled);
+  const { result, originalCsv, sanitizedCsvBundle, shouldUseWorker, workerTimeoutError } = useScannerPipeline({
+    text: deferredText,
+    mode,
+    options: effectiveOptions,
+    neutralizeFormulas,
+    expectCsv,
+  });
 
-  const [workerPayload, setWorkerPayload] = useState<{
-    result: RedactionResult;
-    originalCsv: ParsedCsv;
-    sanitizedCsvBundle: SanitizedCsvBundle;
-  } | null>(null);
-  const [workerTimeoutError, setWorkerTimeoutError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!shouldUseWorker) {
-      return;
-    }
-
-    if (!workerRef.current) {
-      workerRef.current = new Worker(new URL('./workers/scanner.worker.ts', import.meta.url), {
-        type: 'module',
-      });
-    }
-
-    const activeWorker = workerRef.current;
-    const reqId = requestIdRef.current + 1;
-    requestIdRef.current = reqId;
-
-    const handleMessage = (event: MessageEvent<WorkerScanResponse>) => {
-      if (event.data.requestId !== requestIdRef.current) return;
-      window.clearTimeout(watchdog);
-      setWorkerTimeoutError(null);
-      setWorkerPayload({
-        result: event.data.result,
-        originalCsv: event.data.originalCsv,
-        sanitizedCsvBundle: event.data.sanitizedCsvBundle,
-      });
-    };
-
-    activeWorker.addEventListener('message', handleMessage);
-
-    const watchdog = window.setTimeout(() => {
-      if (requestIdRef.current === reqId) {
-        activeWorker.terminate();
-        workerRef.current = null;
-        setWorkerTimeoutError('Scan aborted after 2000ms inside isolated Web Worker (ReDoS protection).');
-      }
-    }, 2000);
-
-    const payload: WorkerScanRequest = {
-      requestId: reqId,
-      text: deferredText,
-      mode,
-      options: effectiveOptions,
-      neutralizeFormulas,
-      expectCsv,
-    };
-    activeWorker.postMessage(payload);
-
-    return () => {
-      window.clearTimeout(watchdog);
-      activeWorker.removeEventListener('message', handleMessage);
-    };
-  }, [shouldUseWorker, deferredText, mode, effectiveOptions, neutralizeFormulas, expectCsv]);
-
-  useEffect(() => {
-    return () => {
-      workerRef.current?.terminate();
-      workerRef.current = null;
-    };
-  }, []);
+  const safeSummary = useMemo<SafeScanSummary>(
+    () => ({
+      totalDetected: result.scan.totalDetected,
+      riskScoreBefore: result.scan.risk.scoreBefore,
+      riskLevelBefore: result.scan.risk.levelBefore,
+      luhnRejectedCount: result.scan.luhnRejectedCount,
+      counts: result.scan.counts,
+    }),
+    [result.scan],
+  );
 
   useEffect(() => {
     return installNetworkMonitor((event, isGemini) => {
@@ -166,11 +109,8 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === 'system') {
-      root.removeAttribute('data-theme');
-    } else {
-      root.setAttribute('data-theme', theme);
-    }
+    if (theme === 'system') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', theme);
   }, [theme]);
 
   useEffect(() => {
@@ -179,48 +119,14 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const result = useMemo(
-    () => (shouldUseWorker && workerPayload ? workerPayload.result : redactText(deferredText, mode, effectiveOptions)),
-    [shouldUseWorker, workerPayload, deferredText, mode, effectiveOptions],
-  );
-
-  const originalCsv = useMemo(
-    () => (shouldUseWorker && workerPayload ? workerPayload.originalCsv : parseCsvRows(deferredText, expectCsv)),
-    [shouldUseWorker, workerPayload, deferredText, expectCsv],
-  );
-
-  const sanitizedCsvBundle = useMemo<SanitizedCsvBundle>(() => {
-    if (shouldUseWorker && workerPayload) {
-      return workerPayload.sanitizedCsvBundle;
-    }
-    if (!originalCsv.isTabular) {
-      return { headers: [] as string[], rows: [] as string[][], isTabular: false, parseError: null, serializedCsv: '' };
-    }
-    const { sanitizedHeaders, sanitizedRows, serializedCsv } = redactCsvCells(
-      originalCsv,
-      mode,
-      effectiveOptions,
-      neutralizeFormulas,
-    );
-    return {
-      headers: sanitizedHeaders,
-      rows: sanitizedRows,
-      isTabular: true,
-      parseError: null,
-      serializedCsv,
-    };
-  }, [shouldUseWorker, workerPayload, originalCsv, mode, effectiveOptions, neutralizeFormulas]);
-
-  const safeSummary = useMemo<SafeScanSummary>(
-    () => ({
-      totalDetected: result.scan.totalDetected,
-      riskScoreBefore: result.scan.risk.scoreBefore,
-      riskLevelBefore: result.scan.risk.levelBefore,
-      luhnRejectedCount: result.scan.luhnRejectedCount,
-      counts: result.scan.counts,
-    }),
-    [result.scan],
-  );
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLiveStatus(
+        `Scanned text in ${result.scan.durationMs} milliseconds: ${result.scan.totalDetected} PII entities detected, ${result.scan.luhnRejectedCount} numeric strings rejected by Luhn validation.`,
+      );
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [result.scan.totalDetected, result.scan.luhnRejectedCount, result.scan.durationMs]);
 
   const activeExportText =
     diffViewMode === 'csv' && sanitizedCsvBundle.isTabular ? sanitizedCsvBundle.serializedCsv : result.sanitizedText;
@@ -260,8 +166,7 @@ export default function App() {
 
   const handleKeepOriginal = (value: string) => {
     const cleanVal = value.trim();
-    if (!cleanVal) return;
-    if (effectiveOptions.allowlist.some((existing) => existing.toLowerCase() === cleanVal.toLowerCase())) {
+    if (!cleanVal || effectiveOptions.allowlist.some((e) => e.toLowerCase() === cleanVal.toLowerCase())) {
       return;
     }
     const previous = allowlistText;
@@ -272,8 +177,7 @@ export default function App() {
 
   const handleRestoreAllowlisted = (value: string) => {
     const previous = allowlistText;
-    const updated = effectiveOptions.allowlist.filter((item) => item.toLowerCase() !== value.toLowerCase());
-    setAllowlistText(updated.join(', '));
+    setAllowlistText(effectiveOptions.allowlist.filter((i) => i.toLowerCase() !== value.toLowerCase()).join(', '));
     setLiveStatus(`Re-enabled PII redaction for "${value}".`);
     setToast({ message: `Restored redaction for "${value}"`, undoAllowlist: previous });
   };
@@ -283,7 +187,6 @@ export default function App() {
       sha256Hex(deferredText),
       sha256Hex(activeExportText),
     ]);
-
     const certificate = {
       tool: 'CipherShield',
       executionEnvironment: shouldUseWorker
@@ -292,10 +195,7 @@ export default function App() {
       generatedAt: new Date().toISOString(),
       sourceFilename,
       redactionMode: mode,
-      integrityDigests: {
-        originalSha256: rawSha256,
-        sanitizedSha256,
-      },
+      integrityDigests: { originalSha256: rawSha256, sanitizedSha256 },
       networkMonitor: networkState,
       exposureRisk: result.scan.risk,
       metrics: {
@@ -307,7 +207,6 @@ export default function App() {
       googleCloudDlpSummary: buildCloudDlpSummary(result.scan.counts),
       googleCloudDlpDeidentifyConfig: buildCloudDlpDeidentifyConfig(result.scan.counts, mode),
     };
-
     const baseName = sourceFilename.replace(/\.(txt|csv)$/i, '') || 'audit';
     triggerDownload(
       JSON.stringify(certificate, null, 2),
@@ -319,20 +218,20 @@ export default function App() {
   const toggleCategory = (category: PiiCategory) => {
     setOptions((prev) => ({
       ...prev,
-      enabledCategories: {
-        ...prev.enabledCategories,
-        [category]: !prev.enabledCategories[category],
-      },
+      enabledCategories: { ...prev.enabledCategories, [category]: !prev.enabledCategories[category] },
     }));
+  };
+
+  const handleRunSelfTest = (notify = true) => {
+    const report = runAdversarialSelfTest();
+    setSelfTest(report);
+    setLiveStatus(`Self-test complete: ${report.passed} of ${report.total} probes passed.`);
+    if (notify) setToast({ message: `Adversarial proof: ${report.passed}/${report.total} passed` });
   };
 
   const selectTab = (tab: WorkspaceTab, focus = false) => {
     setActiveTab(tab);
-    if (tab === 'proof' && !selfTest) {
-      const report = runAdversarialSelfTest();
-      setSelfTest(report);
-      setLiveStatus(`Self-test complete: ${report.passed} of ${report.total} probes passed.`);
-    }
+    if (tab === 'proof' && !selfTest) handleRunSelfTest(false);
     if (focus) tabRefs.current[tab]?.focus();
   };
 
@@ -388,35 +287,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [handleDownloadSanitized]);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setLiveStatus(
-        `Scanned text in ${result.scan.durationMs} milliseconds: ${result.scan.totalDetected} PII entities detected, ${result.scan.luhnRejectedCount} numeric strings rejected by Luhn validation.`,
-      );
-    }, 600);
-    return () => window.clearTimeout(timer);
-  }, [result.scan.totalDetected, result.scan.luhnRejectedCount, result.scan.durationMs]);
-
   const egressClean = networkState.externalCallsBlockedOrLogged === 0;
-  const activeCategories = Object.values(result.scan.counts).filter((n) => n > 0).length;
-
   const getTabIcon = (id: WorkspaceTab) => {
-    switch (id) {
-      case 'studio':
-        return <ShieldCheck size={16} aria-hidden="true" />;
-      case 'vault':
-        return <KeyRound size={16} aria-hidden="true" />;
-      case 'proof':
-        return <FlaskConical size={16} aria-hidden="true" />;
-      case 'gemini':
-        return <Sparkles size={16} aria-hidden="true" />;
-    }
+    if (id === 'studio') return <ShieldCheck size={16} aria-hidden="true" />;
+    if (id === 'vault') return <KeyRound size={16} aria-hidden="true" />;
+    if (id === 'proof') return <FlaskConical size={16} aria-hidden="true" />;
+    return <Sparkles size={16} aria-hidden="true" />;
   };
-
   const getTabBadge = (id: WorkspaceTab): string | null => {
-    if (id === 'studio') return result.scan.totalDetected > 0 ? String(result.scan.totalDetected) : null;
-    if (id === 'vault') return result.mappings.length > 0 ? String(result.mappings.length) : null;
-    if (id === 'proof') return selfTest ? `${selfTest.passed}/${selfTest.total}` : null;
+    if (id === 'studio' && result.scan.totalDetected > 0) return String(result.scan.totalDetected);
+    if (id === 'vault' && result.mappings.length > 0) return String(result.mappings.length);
+    if (id === 'proof' && selfTest) return `${selfTest.passed}/${selfTest.total}`;
     return null;
   };
 
@@ -433,9 +314,8 @@ export default function App() {
         onOpenPromptLog={() => dialogRef.current?.showModal()}
       />
 
-      {/* Sticky Top Workspace Navigation & Live Telemetry */}
       <nav className="workspace-nav-shell" aria-label="Workspace navigation">
-        <div ref={navTabsRef} className="workspace-tabs" role="tablist" aria-label="CipherShield workspace sections">
+        <div className="workspace-tabs" role="tablist" aria-label="CipherShield workspace sections">
           <span ref={navSliderRef} className="ws-slider" aria-hidden="true" />
           {WORKSPACE_TABS.map((tab, idx) => {
             const badge = getTabBadge(tab.id);
@@ -455,7 +335,7 @@ export default function App() {
                 className={`ws-tab ${selected ? 'is-active' : ''}`}
                 onClick={() => selectTab(tab.id)}
                 onKeyDown={(e) => onTabKeyDown(e, idx)}
-                title={`${tab.label} (${tab.shortcut})`}
+                title={`${tab.label} (Alt+${tab.shortcut})`}
               >
                 {getTabIcon(tab.id)}
                 <span>{tab.label}</span>
@@ -505,41 +385,8 @@ export default function App() {
           {liveStatus}
         </div>
 
-        {/* Compact Top Telemetry Strip */}
-        <section className="mc-strip" aria-label="Sanitization telemetry summary">
-          <div className="mc-card mc-cyan">
-            <span className="mc-label">Entities detected</span>
-            <span className="mc-value mono">{result.scan.totalDetected}</span>
-            <span className="mc-sub">{activeCategories} active categories</span>
-          </div>
-          <div className="mc-card mc-red">
-            <span className="mc-label">Exposure before</span>
-            <span className="mc-value mono">{result.scan.risk.scoreBefore}/100</span>
-            <span className="mc-sub">{result.scan.risk.levelBefore}</span>
-          </div>
-          <div className="mc-card mc-green">
-            <span className="mc-label">Residual after</span>
-            <span className="mc-value mono">{result.scan.risk.scoreAfter}/100</span>
-            <span className="mc-sub">{result.scan.risk.residualCount} residual entities</span>
-          </div>
-          <div className="mc-card mc-amber">
-            <span className="mc-label">Luhn rejected</span>
-            <span className="mc-value mono">{result.scan.luhnRejectedCount}</span>
-            <span className="mc-sub">non-card IDs preserved</span>
-          </div>
-          <div className="mc-card mc-violet">
-            <span className="mc-label">Scan speed</span>
-            <span className="mc-value mono">
-              {result.scan.durationMs}
-              <span className="mc-unit"> ms</span>
-            </span>
-            <span className="mc-sub">
-              {rawText.length.toLocaleString()} chars · {shouldUseWorker ? 'Web Worker' : 'Main RAM'}
-            </span>
-          </div>
-        </section>
+        <TelemetryStrip scan={result.scan} charCount={rawText.length} shouldUseWorker={shouldUseWorker} />
 
-        {/* Tab 1: Sanitize Studio */}
         <div
           role="tabpanel"
           id="ws-panel-studio"
@@ -570,7 +417,7 @@ export default function App() {
               mode={mode}
               options={options}
               allowlistText={allowlistText}
-              customRuleError={(shouldUseWorker ? workerTimeoutError : null) ?? result.scan.customRuleError}
+              customRuleError={workerTimeoutError ?? result.scan.customRuleError}
               onChangeMode={setMode}
               onChangeOptions={setOptions}
               onChangeAllowlist={setAllowlistText}
@@ -595,7 +442,6 @@ export default function App() {
           />
         </div>
 
-        {/* Tab 2: Entity Review, Cloud DLP Taxonomy & AES-256-GCM Key Vault */}
         <div
           role="tabpanel"
           id="ws-panel-vault"
@@ -614,7 +460,6 @@ export default function App() {
           />
         </div>
 
-        {/* Tab 3: Live Adversarial Self-Test Proof */}
         <div
           role="tabpanel"
           id="ws-panel-proof"
@@ -622,64 +467,9 @@ export default function App() {
           hidden={activeTab !== 'proof'}
           className={`ws-panel ${activeTab === 'proof' ? 'is-active' : ''}`}
         >
-          <section className="panel" aria-labelledby="selftest-heading">
-            <div className="st-head">
-              <div>
-                <h2 id="selftest-heading" className="section-heading">
-                  Live 10-Case Adversarial Engine Proof
-                </h2>
-                <p className="panel-subtitle proof-empty">
-                  Deterministic probes verifying Luhn/IMEI filtering, PAN holder rules, Verhoeff UIDAI Aadhaar,
-                  IPv4-mapped IPv6, Amex masking, UPI separation, Google libphonenumber, ReDoS guard, and CWE-1236
-                  CSV.
-                </p>
-              </div>
-              <div className="action-row st-actions">
-                {selfTest && (
-                  <span
-                    className={`st-score mono ${selfTest.passed === selfTest.total ? 'safe-ink' : 'warn-ink'}`}
-                  >
-                    Live Adversarial Proof: {selfTest.passed}/{selfTest.total} Passed ({selfTest.durationMs} ms)
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => {
-                    const report = runAdversarialSelfTest();
-                    setSelfTest(report);
-                    setLiveStatus(`Self-test complete: ${report.passed} of ${report.total} probes passed.`);
-                    setToast({ message: `Adversarial proof: ${report.passed}/${report.total} passed` });
-                  }}
-                >
-                  <FlaskConical size={15} aria-hidden="true" />
-                  Run 10-Case Adversarial Self-Test
-                </button>
-              </div>
-            </div>
-
-            {!selfTest ? (
-              <p className="muted-copy proof-empty">
-                Click <strong>Run 10-Case Adversarial Self-Test</strong> to execute and inspect all verification vectors
-                live inside your browser.
-              </p>
-            ) : (
-              <div className="st-grid">
-                {selfTest.cases.map((c) => (
-                  <article key={c.id} className={`st-case ${c.passed ? 'is-pass' : 'is-fail'}`}>
-                    <div className="st-title">
-                      <span className={`st-badge ${c.passed ? 'pass' : 'fail'}`}>{c.passed ? 'PASS' : 'FAIL'}</span>
-                      <span>{c.title}</span>
-                    </div>
-                    <div className="st-detail mono">{c.detail}</div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+          <SelfTestPanel selfTest={selfTest} onRunSelfTest={() => handleRunSelfTest(true)} />
         </div>
 
-        {/* Tab 4: Compliance Advisor (Offline + Gemini Counts-Only) */}
         <div
           role="tabpanel"
           id="ws-panel-gemini"

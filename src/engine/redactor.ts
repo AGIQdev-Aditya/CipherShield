@@ -173,8 +173,8 @@ export function redactText(
 
   const sanitizedText = outputChunks.join('');
 
-  // Genuine post-redaction verification scan (skipped for per-cell CSV redaction for performance)
-  const postScan = skipPostScan ? null : scanTextForPii(sanitizedText, options, true);
+  // Skip post-scan when skipping CSV per-cell overhead OR when zero entities were redacted
+  const postScan = skipPostScan || entities.length === 0 ? null : scanTextForPii(sanitizedText, options, true);
   const afterRisk = postScan ? calculateRiskScore(postScan.counts) : { score: 0, level: 'NONE' as const };
 
   return {

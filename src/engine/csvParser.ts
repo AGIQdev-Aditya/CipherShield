@@ -195,9 +195,9 @@ export function redactCsvCells(
   }
 
   const sharedSession = createPseudonymSession();
-  const sanitizedHeaders = parsed.headers.map((h) => redactText(h, mode, options, sharedSession).sanitizedText);
+  const sanitizedHeaders = parsed.headers.map((h) => redactText(h, mode, options, sharedSession, true).sanitizedText);
   const sanitizedRows = parsed.rows.map((row) =>
-    row.map((cell) => redactText(cell, mode, options, sharedSession).sanitizedText),
+    row.map((cell) => redactText(cell, mode, options, sharedSession, true).sanitizedText),
   );
 
   return {
