@@ -12,27 +12,23 @@
 
 **Key Design Decisions:**
 - Enforced React text-node rendering instead of `innerHTML` or `dangerouslySetInnerHTML` so pasted `<script>` XSS probes render harmlessly as literal strings.
-- Built a zero-dependency Node.js static server (`server.js`) enforcing CSP (`object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, zero `'unsafe-inline'`), `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff`.
+- Built a zero-dependency Node 22 static server (`server.js`) enforcing CSP (`object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, `style-src 'self'`, zero `'unsafe-inline'`), `Strict-Transport-Security`, genuine `404` on missing `/assets/*`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff`.
 
 ---
 
 ## Prompt 2 — Deterministic Scanner & Adversarial Edge-Case Audit
 **Prompt Objective:**
-> Harden `src/engine/validators.ts`, `src/engine/scanner.ts`, `src/engine/redactor.ts`, and `src/engine/csvParser.ts` against case variants, variable card lengths, toll-free/international phones, ReDoS patterns, and RFC-4180 CSV escaping.
+> Harden `src/engine/validators.ts`, `src/engine/scanner.ts`, `src/engine/redactor.ts`, and `src/engine/csvParser.ts` against IMEI/ICCID Luhn collisions, lowercase PAN false positives, IPv4-mapped IPv6, UPI VPA vs email separation, Indian 5+5 mobile formats, ReDoS patterns, and RFC-4180 CSV CWE-1236 formula injection.
 
 **Refinements Applied:**
-- Updated PAN regex to case-insensitive (`[A-Za-z]{5}[0-9]{4}[A-Za-z]`) with uppercase normalization.
-- Updated Credit Card partial masking to preserve exact digit counts and separators across 13–19 digits (including 15-digit Amex `4-6-5`).
-- Added RFC-4180 `escapeCsvCell()`, `serializeCsvRows()`, and `redactCsvCells()` so downloaded `.csv` files preserve quoting and commas.
-- Added toll-free (`1800-XXX-XXXX`), international (`+44 ...`), and space-separated `+91` phone support plus strict date exclusion and ReDoS nested-quantifier rejection.
+- Integrated `google-libphonenumber` for strict international/Indian phone validation and added card network IIN filtering (`Visa`, `Mastercard`, `Amex`, `Diners Club`, `RuPay`, `Discover`) so 15-digit IMEIs are rejected cleanly.
+- Guarded lowercase PAN detection with taxpayer 4th-char entity code + context keyword check, updated PAN partial mask to `A****1234F` to guarantee post-redaction rescan reaches `0/100`, and updated CSV export to redact headers + rows cleanly without row caps and with CWE-1236 formula neutralization.
 
 ---
 
-## Prompt 3 — Zero-Egress Proof, Web Crypto Vault & Cloud Run Hardening
+## Prompt 3 — Zero-Egress Proof, Web Crypto Vault & Interactive Override UI
 **Prompt Objective:**
-> Implement runtime Zero-Egress network telemetry (`src/engine/networkMonitor.ts`), client-side PBKDF2 + AES-256-GCM reversible key vault (`src/engine/cryptoVault.ts`), lazy-loaded `@google/genai` counts-only compliance advisor (`src/services/geminiAdvisor.ts`), and async Brotli/gzip + structured Cloud Logging JSON (`server.js`).
+> Upgrade PBKDF2-SHA256 to 600,000 iterations + AES-GCM AAD (`src/engine/cryptoVault.ts`), add `sendBeacon`/`PerformanceObserver` monitoring + self-hosted `@fontsource` fonts, enforce structural `SafeScanSummary` isolation with offline DPDP/PCI-DSS brief fallback (`src/services/geminiAdvisor.ts`), and add an interactive entity inspector with one-click **Keep Original** override + 10-case adversarial self-test proof.
 
 **Verification Results:**
-- Passed `npm run lint` (`eslint .` with zero errors/warnings across TypeScript and `jsx-a11y`).
-- Passed `npm test` (25 Vitest unit, AES-GCM crypto, CSV serialization, `100 KB` perf benchmark, React UI, and `axe-core` WCAG tests).
-- Verified production `npm run build` and HTTP `br` compression / CSP headers via `server.js`.
+- Verified with `npm run lint`, `npm test`, and `npm run build` plus HTTP response header and Chromium visual inspection against `server.js`.

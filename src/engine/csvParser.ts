@@ -1,19 +1,20 @@
 import { DetectionOptions, RedactionMode } from '../types/pii';
-import { redactText } from './redactor';
+import { createPseudonymSession, redactText } from './redactor';
 
 export interface ParsedCsv {
   headers: string[];
   rows: string[][];
   isTabular: boolean;
+  parseError: string | null;
 }
 
 /**
- * Parses CSV text cleanly according to RFC-4180 quoted field semantics.
+ * Parses all CSV records cleanly per RFC-4180 (stripping UTF-8 BOM, detecting unclosed quotes, no silent row truncation).
  */
-export function parseCsvRows(input: string, maxRows = 500): ParsedCsv {
-  const trimmed = input.trim();
-  if (!trimmed) {
-    return { headers: [], rows: [], isTabular: false };
+export function parseCsvRows(input: string): ParsedCsv {
+  const cleaned = input.replace(/^\uFEFF/, '').trim();
+  if (!cleaned) {
+    return { headers: [], rows: [], isTabular: false, parseError: null };
   }
 
   const lines: string[][] = [];
@@ -21,9 +22,9 @@ export function parseCsvRows(input: string, maxRows = 500): ParsedCsv {
   let cell = '';
   let inQuotes = false;
 
-  for (let i = 0; i < trimmed.length; i++) {
-    const ch = trimmed[i];
-    const next = trimmed[i + 1];
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    const next = cleaned[i + 1];
 
     if (inQuotes) {
       if (ch === '"' && next === '"') {
@@ -53,8 +54,10 @@ export function parseCsvRows(input: string, maxRows = 500): ParsedCsv {
     } else {
       cell += ch;
     }
+  }
 
-    if (lines.length >= maxRows + 1) break;
+  if (inQuotes) {
+    return { headers: [], rows: [], isTabular: false, parseError: 'Malformed CSV: unclosed quote detected.' };
   }
 
   if (cell.length > 0 || row.length > 0) {
@@ -63,20 +66,31 @@ export function parseCsvRows(input: string, maxRows = 500): ParsedCsv {
   }
 
   if (lines.length < 2) {
-    return { headers: [], rows: [], isTabular: false };
+    return { headers: [], rows: [], isTabular: false, parseError: null };
   }
 
   const colCount = lines[0].length;
   const consistent = colCount >= 2 && lines.every((r) => r.length === colCount);
   if (!consistent) {
-    return { headers: [], rows: [], isTabular: false };
+    return { headers: [], rows: [], isTabular: false, parseError: null };
   }
 
   return {
     headers: lines[0],
     rows: lines.slice(1),
     isTabular: true,
+    parseError: null,
   };
+}
+
+/**
+ * Neutralizes spreadsheet formula injection (CWE-1236) if enabled before RFC-4180 quoting.
+ */
+export function sanitizeFormulaCell(value: string, neutralizeFormulas: boolean): string {
+  if (neutralizeFormulas && /^[\t\r ]*[=+\-@]/.test(value)) {
+    return `'${value}`;
+  }
+  return value;
 }
 
 /**
@@ -92,37 +106,36 @@ export function escapeCsvCell(value: string): string {
 /**
  * Serializes headers and rows into a valid RFC-4180 CSV string.
  */
-export function serializeCsvRows(headers: string[], rows: string[][]): string {
+export function serializeCsvRows(headers: string[], rows: string[][], neutralizeFormulas = false): string {
   const allRows = [headers, ...rows];
-  return allRows.map((r) => r.map(escapeCsvCell).join(',')).join('\n');
+  return allRows
+    .map((r) => r.map((c) => escapeCsvCell(sanitizeFormulaCell(c, neutralizeFormulas))).join(','))
+    .join('\n');
 }
 
 /**
- * Redacts a CSV document cell-by-cell while preserving column boundaries and RFC-4180 quoting.
+ * Redacts all CSV headers and rows cell-by-cell using a shared PseudonymSession
+ * so control characters inside cells never corrupt column structure and no rows are truncated.
  */
 export function redactCsvCells(
   parsed: ParsedCsv,
   mode: RedactionMode,
   options: DetectionOptions,
-): { sanitizedRows: string[][]; serializedCsv: string } {
+  neutralizeFormulas = true,
+): { sanitizedHeaders: string[]; sanitizedRows: string[][]; serializedCsv: string } {
   if (!parsed.isTabular) {
-    return { sanitizedRows: [], serializedCsv: '' };
+    return { sanitizedHeaders: [], sanitizedRows: [], serializedCsv: '' };
   }
 
-  // Run single-document redaction per cell using consistent counter state via joined sentinel?
-  // Wait: running redactText on each cell individually would reset pseudonym counters per row!
-  // Instead, redact row cells directly with a safe ASCII Record Separator (\u001E) & Unit Separator (\u001F),
-  // then split cleanly and re-serialize with RFC-4180 escaping so USER_01 stays globally consistent!
-  const ROW_SEP = '\u001E';
-  const COL_SEP = '\u001F';
-  const packed = parsed.rows.map((r) => r.join(COL_SEP)).join(ROW_SEP);
-  const redacted = redactText(packed, mode, options);
-  const sanitizedRows = redacted.sanitizedText
-    .split(ROW_SEP)
-    .map((line) => line.split(COL_SEP));
+  const sharedSession = createPseudonymSession();
+  const sanitizedHeaders = parsed.headers.map((h) => redactText(h, mode, options, sharedSession).sanitizedText);
+  const sanitizedRows = parsed.rows.map((row) =>
+    row.map((cell) => redactText(cell, mode, options, sharedSession).sanitizedText),
+  );
 
   return {
+    sanitizedHeaders,
     sanitizedRows,
-    serializedCsv: serializeCsvRows(parsed.headers, sanitizedRows),
+    serializedCsv: serializeCsvRows(sanitizedHeaders, sanitizedRows, neutralizeFormulas),
   };
 }

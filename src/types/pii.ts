@@ -5,6 +5,7 @@ export type PiiCategory =
   | 'PAN'
   | 'AADHAAR'
   | 'CREDIT_CARD'
+  | 'UPI_ID'
   | 'CUSTOM';
 
 export type RedactionMode = 'full' | 'partial' | 'pseudonymize';
@@ -30,8 +31,9 @@ export interface PiiEntity {
   normalizedKey: string;
   start: number;
   end: number;
+  confidence: 'HIGH' | 'MEDIUM';
   metadata?: string;
-  validatedBy?: 'LUHN' | 'VERHOEFF' | 'RFC' | 'OCTET' | 'FORMAT' | 'CUSTOM';
+  validatedBy?: 'LUHN' | 'VERHOEFF' | 'LIBPHONENUMBER' | 'RFC' | 'OCTET' | 'IPV6_PARSER' | 'FORMAT' | 'CUSTOM';
 }
 
 export interface RejectedCandidate {
@@ -53,6 +55,8 @@ export interface RiskSummary {
   scoreBefore: number;
   scoreAfter: number;
   levelBefore: 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW' | 'NONE';
+  levelAfter: 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW' | 'NONE';
+  residualCount: number;
 }
 
 export interface ScanResult {

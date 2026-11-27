@@ -12,16 +12,16 @@ export const SAMPLE_DATASETS: SampleDataset[] = [
     label: 'FinTech Incident Log',
     filename: 'incident_support_log.txt',
     description:
-      'Includes recurring user emails, Indian +91/US phones, valid Luhn cards, a fake 16-digit order ID (Luhn rejected), PAN, Aadhaar, IPv4/IPv6, allowlisted localhost 127.0.0.1, and a benign XSS test string.',
+      'Includes recurring user emails, UPI VPA, Indian 5-5 & +91/toll-free phones, valid Luhn cards, IMEI + 16-digit order ID decoys, PAN, Verhoeff Aadhaar, IPv4/IPv6 (::ffff:192.0.2.1), allowlisted 127.0.0.1, and XSS probe.',
     content: `[2026-11-27 09:42:11 IST] TICKET #INC-8841 - Billing Escalation
 Reporter: Aarav Kulkarni <aarav.kulkarni@fintech-corp.in> | Backup: AARAV.KULKARNI@FINTECH-CORP.IN
-Callback Mobile: +91 98765 43210 (alt: 9876543210) | US Escalation: (415) 890-4412
-Client Source IP: 192.168.42.108 -> Gateway: 10.0.14.22 | Loopback: 127.0.0.1 | Edge IPv6: 2001:0db8:85a3::8a2e:0370:7334
+Callback Mobile: +91 98765 43210 (alt: 98765 43210) | Toll-Free: 1800-419-0155
+UPI Refund Handle: aarav.kulkarni@okaxis | Device IMEI: 490154203237518 (Not a card)
+Client Source IP: 192.168.42.108 -> Gateway: ::ffff:192.0.2.1 | Loopback: 127.0.0.1 | Edge IPv6: 2001:0db8:85a3::8a2e:0370:7334
 
 KYC Verification Payload:
-- Primary PAN: ABCDE1234F (Verified holder)
-- Secondary PAN: BNZPM9087K
-- Aadhaar Ref: 2341 5678 9120
+- Primary PAN: ABCDE1234F (Verified holder) | Alt PAN: awfpd4412m
+- Aadhaar Ref: 2341 5678 9120 (Verhoeff Valid)
 
 Payment Audit Trail:
 - Charged Visa Card: 4532-0151-1283-0366 (Luhn Valid)
@@ -35,21 +35,21 @@ Auditor Notes: Priyam Nair (priyam.nair@secops.org) verified from workstation 17
     id: 'hr-csv',
     label: 'HR Payroll CSV',
     filename: 'employee_onboarding_export.csv',
-    description: 'Multi-row CSV dataset with quoted fields, recurring emails, PANs, Aadhaar, and Luhn/non-Luhn cards.',
+    description: 'Multi-row RFC-4180 CSV with quoted commas, Verhoeff-valid Aadhaar, recurring emails, and Luhn/non-Luhn cards.',
     content: `emp_id,full_name,email,phone,pan_id,aadhaar_no,corporate_card,workstation_ip
-EMP-10421,"Deshmukh, Rohan",rohan.d@niat-labs.in,+91-9823011223,AWFPD4412M,3412-8891-4402,5425233430109903,10.24.1.15
-EMP-10422,"Iyer, Meera",meera.iyer@niat-labs.in,+91 97654 32109,CHJPI7721Q,7812 9043 1185,4539148803436467,10.24.1.19
-EMP-10421,"Deshmukh, Rohan (Re-audit)",rohan.d@niat-labs.in,9823011223,AWFPD4412M,3412-8891-4402,1234-5678-9012-3456,192.168.10.55`,
+EMP-10421,"Deshmukh, Rohan",rohan.d@niat-labs.in,+91-9823011223,AWFPD4412M,3412-8891-4408,5425233430109903,10.24.1.15
+EMP-10422,"Iyer, Meera",meera.iyer@niat-labs.in,+91 97654 32109,CHJPI7721Q,7812 9043 1189,4539148803436467,10.24.1.19
+EMP-10421,"Deshmukh, Rohan (Re-audit)",rohan.d@niat-labs.in,9823011223,AWFPD4412M,3412-8891-4408,1234-5678-9012-3456,192.168.10.55`,
   },
   {
     id: 'clinical-note',
     label: 'Clinical Intake Note',
     filename: 'clinical_intake_note.txt',
-    description: 'Healthcare triage record containing patient identity, Aadhaar, emergency contact, and copay billing card.',
+    description: 'Healthcare triage record with Verhoeff-valid Aadhaar, PAN, phones, IPv4, and billing card.',
     content: `CLINICAL TRIAGE SUMMARY - OPD WARD 4B
 Patient Contact: ananya.joshi@carehealth.in | Guardian Email: ananya.joshi@carehealth.in
-Emergency Phone: +91 99220 44551 | Clinic Desk Alt: 09822113344
-Aadhaar UID: 6512 4409 8821 | Insurance PAN: DFGPA5510L
+Emergency Phone: +91 99220 44551 | Clinic Desk Alt: 080-45678900
+Aadhaar UID: 6512 4409 8827 | Insurance PAN: DFGPA5510L
 Copay Authorization Card: 4916-4321-8765-4322 (Verify Luhn) | Non-Card Auth Ref: 9999-8888-7777-6666
 Telehealth Session IP: 103.21.124.88`,
   },
@@ -85,7 +85,7 @@ function buildLuhnInvalid16(): string {
 
 /**
  * Generates fresh offline synthetic noisy logs containing guaranteed Luhn-valid cards,
- * non-Luhn decoys, Indian PAN, Aadhaar, IPv4, phones, and duplicated identities.
+ * non-Luhn decoys, Indian PAN, Aadhaar, UPI, IPv4, phones, and duplicated identities.
  */
 export function generateSyntheticChaosLog(): string {
   const names = ['kiran.rao', 'siddharth.patil', 'neha.verma', 'vikram.menon', 'tanvi.joshi'];
@@ -99,7 +99,7 @@ export function generateSyntheticChaosLog(): string {
   const phoneA = `+91 ${Math.floor(70000 + Math.random() * 29000)} ${Math.floor(10000 + Math.random() * 89999)}`;
   const rawPhoneA = phoneA.replace('+91 ', '').replace(' ', '');
   const panA = `${String.fromCharCode(65 + Math.floor(Math.random() * 20))}BCPK${Math.floor(1000 + Math.random() * 8999)}M`;
-  const aadhaarA = `${Math.floor(2000 + Math.random() * 7000)} ${Math.floor(1000 + Math.random() * 8999)} ${Math.floor(1000 + Math.random() * 8999)}`;
+  const aadhaarValid = ['2341 5678 9120', '3412 8891 4408', '6512 4409 8827'][Math.floor(Math.random() * 3)];
   const validCard = buildLuhnValidCard(Math.random() > 0.5 ? '4532' : '5425');
   const fakeOrder = buildLuhnInvalid16();
   const ipA = `192.168.${Math.floor(1 + Math.random() * 200)}.${Math.floor(2 + Math.random() * 240)}`;
@@ -107,9 +107,9 @@ export function generateSyntheticChaosLog(): string {
 
   return `[SYNTHETIC AUDIT FIXTURE] SESSION #${Math.floor(1000 + Math.random() * 9000)}
 Primary Actor: ${emailA} (normalized duplicate: ${emailA.toUpperCase()})
-Secondary Escalation: ${emailB} | Contact: ${phoneA} (short: ${rawPhoneA})
+Secondary Escalation: ${emailB} | Contact: ${phoneA} (short: ${rawPhoneA}) | UPI: ${nameA}@oksbi
 Source Network: ${ipA} -> Bastion ${ipB}
-Tax & Identity Docs: PAN=${panA} | Aadhaar=${aadhaarA}
+Tax & Identity Docs: PAN=${panA} | Aadhaar=${aadhaarValid}
 Valid Luhn Payment Card: ${validCard} (re-charged for ${emailA})
 Decoy Order Reference (Fails Luhn): ${fakeOrder}`;
 }

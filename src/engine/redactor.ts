@@ -7,7 +7,8 @@ import {
   RedactionMode,
   RedactionResult,
 } from '../types/pii';
-import { DEFAULT_DETECTION_OPTIONS, scanTextForPii } from './scanner';
+import { calculateRiskScore, DEFAULT_DETECTION_OPTIONS, scanTextForPii } from './scanner';
+import { splitPhoneExtension } from './validators';
 
 const PSEUDONYM_PREFIX: Record<PiiCategory, string> = {
   EMAIL: 'USER',
@@ -16,17 +17,37 @@ const PSEUDONYM_PREFIX: Record<PiiCategory, string> = {
   PAN: 'PAN',
   AADHAAR: 'AADHAAR',
   CREDIT_CARD: 'CARD',
+  UPI_ID: 'UPI',
   CUSTOM: 'CUSTOM',
 };
+
+export interface SharedPseudonymSession {
+  ledger: Map<string, PseudonymMapping>;
+  counters: Record<PiiCategory, number>;
+}
+
+export function createPseudonymSession(): SharedPseudonymSession {
+  return {
+    ledger: new Map<string, PseudonymMapping>(),
+    counters: {
+      EMAIL: 0,
+      PHONE: 0,
+      IP_ADDRESS: 0,
+      PAN: 0,
+      AADHAAR: 0,
+      CREDIT_CARD: 0,
+      UPI_ID: 0,
+      CUSTOM: 0,
+    },
+  };
+}
 
 function partialMaskValue(entity: PiiEntity): string {
   const { category, value } = entity;
 
   switch (category) {
-    case 'CREDIT_CARD': {
-      // Preserve exact digit count & delimiters (13-19 digits including 15-digit Amex 4-6-5)
+    case 'CREDIT_CARD':
       return value.replace(/\d(?=(?:\D*\d){4})/g, 'X');
-    }
 
     case 'AADHAAR': {
       const digits = value.replace(/\D/g, '');
@@ -35,7 +56,8 @@ function partialMaskValue(entity: PiiEntity): string {
       return `XXXX${sep}XXXX${sep}${last4}`;
     }
 
-    case 'EMAIL': {
+    case 'EMAIL':
+    case 'UPI_ID': {
       const [local, domain] = value.split('@');
       if (!domain) return '[REDACTED]';
       const head = local.length > 1 ? local[0] : '*';
@@ -43,21 +65,22 @@ function partialMaskValue(entity: PiiEntity): string {
     }
 
     case 'PHONE': {
-      const trimmed = value.trim();
-      const digits = trimmed.replace(/\D/g, '');
+      const { core } = splitPhoneExtension(value);
+      const digits = core.replace(/\D/g, '');
       const last4 = digits.slice(-4);
-      if (trimmed.startsWith('+91')) {
+      if (core.startsWith('+91')) {
         return `+91 XXXXXX${last4}`;
       }
       return `XXXXXX${last4}`;
     }
 
     case 'PAN':
-      return `${value.slice(0, 2)}XXX${value.slice(5, 9)}X`;
+      // Non-re-detecting Indian PAN mask (avoids matching PAN regex on rescan)
+      return `${value[0].toUpperCase()}****${value.slice(5, 9)}${value[9].toUpperCase()}`;
 
     case 'IP_ADDRESS': {
       if (value.includes(':')) {
-        const head = value.split(':').slice(0, 2).join(':');
+        const head = value.split(':').slice(0, 2).join(':') || '::';
         return `${head}:XXXX::XXXX`;
       }
       const octets = value.split('.');
@@ -77,47 +100,38 @@ function fullMaskValue(entity: PiiEntity, template: 'generic' | 'typed'): string
 }
 
 /**
- * Redacts detected PII entities in a single deterministic pass and builds
- * synchronized side-by-side diff segments without writing raw HTML.
+ * Redacts detected PII entities in a single deterministic forward pass and re-scans output
+ * to verify true post-redaction residual exposure.
  */
 export function redactText(
   text: string,
   mode: RedactionMode,
   options: DetectionOptions = DEFAULT_DETECTION_OPTIONS,
+  sharedSession?: SharedPseudonymSession,
 ): RedactionResult {
-  const scan = scanTextForPii(text, options);
+  const scan = scanTextForPii(text, options, true);
   const { entities } = scan;
 
-  const categoryCounters: Record<PiiCategory, number> = {
-    EMAIL: 0,
-    PHONE: 0,
-    IP_ADDRESS: 0,
-    PAN: 0,
-    AADHAAR: 0,
-    CREDIT_CARD: 0,
-    CUSTOM: 0,
-  };
-
-  const tokenLedger = new Map<string, PseudonymMapping>();
+  const session = sharedSession ?? createPseudonymSession();
   const originalSegments: DiffSegment[] = [];
   const sanitizedSegments: DiffSegment[] = [];
+  const outputChunks: string[] = [];
   let cursor = 0;
-  let sanitizedOutput = '';
 
   for (const entity of entities) {
     if (entity.start > cursor) {
       const unchanged = text.slice(cursor, entity.start);
       originalSegments.push({ text: unchanged });
       sanitizedSegments.push({ text: unchanged });
-      sanitizedOutput += unchanged;
+      outputChunks.push(unchanged);
     }
 
     const ledgerKey = `${entity.category}:${entity.normalizedKey}`;
-    let existingMapping = tokenLedger.get(ledgerKey);
+    let existingMapping = session.ledger.get(ledgerKey);
 
     if (!existingMapping) {
-      categoryCounters[entity.category] += 1;
-      const serial = String(categoryCounters[entity.category]).padStart(2, '0');
+      session.counters[entity.category] += 1;
+      const serial = String(session.counters[entity.category]).padStart(2, '0');
       const customPrefix =
         entity.category === 'CUSTOM' && options.customRule.label.trim()
           ? options.customRule.label.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
@@ -130,7 +144,7 @@ export function redactText(
         sampleValue: entity.value,
         occurrences: 0,
       };
-      tokenLedger.set(ledgerKey, existingMapping);
+      session.ledger.set(ledgerKey, existingMapping);
     }
     existingMapping.occurrences += 1;
 
@@ -145,7 +159,7 @@ export function redactText(
 
     originalSegments.push({ text: entity.value, entity, replacement });
     sanitizedSegments.push({ text: replacement, entity, replacement });
-    sanitizedOutput += replacement;
+    outputChunks.push(replacement);
     cursor = entity.end;
   }
 
@@ -153,15 +167,29 @@ export function redactText(
     const tail = text.slice(cursor);
     originalSegments.push({ text: tail });
     sanitizedSegments.push({ text: tail });
-    sanitizedOutput += tail;
+    outputChunks.push(tail);
   }
 
+  const sanitizedText = outputChunks.join('');
+
+  // Genuine post-redaction verification scan (measures actual residual risk)
+  const postScan = scanTextForPii(sanitizedText, options, true);
+  const afterRisk = calculateRiskScore(postScan.counts);
+
   return {
-    sanitizedText: sanitizedOutput,
+    sanitizedText,
     originalSegments,
     sanitizedSegments,
-    mappings: Array.from(tokenLedger.values()),
-    scan,
+    mappings: Array.from(session.ledger.values()),
+    scan: {
+      ...scan,
+      risk: {
+        ...scan.risk,
+        scoreAfter: afterRisk.score,
+        levelAfter: afterRisk.level,
+        residualCount: postScan.totalDetected,
+      },
+    },
   };
 }
 

@@ -26,7 +26,14 @@ export function MetricsOverview({ scan, options, onToggleCategory }: MetricsOver
             <span className="mono">
               Raw {scan.risk.scoreBefore}/100 ({scan.risk.levelBefore})
             </span>{' '}
-            → Sanitized <strong className="mono safe-ink">0/100 SECURE</strong>
+            → Sanitized{' '}
+            {scan.risk.scoreAfter === 0 ? (
+              <strong className="mono safe-ink">0/100 NONE (VERIFIED)</strong>
+            ) : (
+              <strong className="mono warn-ink">
+                {scan.risk.scoreAfter}/100 ({scan.risk.levelAfter} · {scan.risk.residualCount} residual)
+              </strong>
+            )}
           </div>
         </div>
         <div className="risk-meta mono">

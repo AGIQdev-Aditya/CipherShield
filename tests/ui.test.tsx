@@ -16,7 +16,7 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(container.querySelector('footer')).not.toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: /CipherShield/i })).toBeTruthy();
     expect(screen.getByText(/Skip to main content/i)).toBeTruthy();
-    expect(screen.getByText(/Zero-Egress Verified · 0 External Calls/i)).toBeTruthy();
+    expect(screen.getByText(/Network Monitor · 0 External Calls/i)).toBeTruthy();
   });
 
   it('safely renders XSS probe strings as plain text without injecting script nodes', () => {
@@ -68,8 +68,22 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('aarav.kulkarni@fintech-corp.in');
 
     const allowlistInput = screen.getByLabelText(/Allowlist \(Comma-separated/i);
-    fireEvent.change(allowlistInput, { target: { value: '127.0.0.1, 10.0.14.22' } });
-    expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('10.0.14.22');
+    fireEvent.change(allowlistInput, { target: { value: '127.0.0.1, 192.168.42.108' } });
+    expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('192.168.42.108');
+  });
+
+  it('lets users inspect detected items, click Keep Original to unredact selectively, and run adversarial self-tests', async () => {
+    render(<App />);
+    const keepButtons = screen.getAllByRole('button', { name: /Keep Original/i });
+    expect(keepButtons.length).toBeGreaterThan(0);
+    fireEvent.click(keepButtons[0]);
+    expect(screen.getByLabelText('Kept / Allowlisted items').textContent).toContain('aarav.kulkarni@fintech-corp.in');
+
+    fireEvent.click(screen.getByRole('button', { name: /Run 10-Case Adversarial Self-Test/i }));
+    expect(await screen.findByText(/Live Adversarial Proof: 10\/10 Passed/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Generate Offline Compliance Brief/i }));
+    expect(await screen.findByText(/PCI-DSS Req 3\.4/i)).toBeTruthy();
   });
 
   it('passes axe-core automated WCAG accessibility audit with zero violations', async () => {

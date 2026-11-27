@@ -1,16 +1,17 @@
 import { useId, useState } from 'react';
 import { Shuffle, Sparkles } from 'lucide-react';
-import { ScanResult } from '../types/pii';
+import type { SafeScanSummary } from '../services/geminiAdvisor';
 
 interface GeminiAdvisorPanelProps {
-  scan: ScanResult;
+  summary: SafeScanSummary;
   onApplySyntheticText: (text: string) => void;
 }
 
 /**
- * Lazy-loads @google/genai strictly on explicit user interaction using aggregate counts only.
+ * Lazy-loads @google/genai strictly on explicit user interaction using SafeScanSummary (zero raw text or PII).
+ * Falls back cleanly to a deterministic offline compliance brief when no API key is entered.
  */
-export function GeminiAdvisorPanel({ scan, onApplySyntheticText }: GeminiAdvisorPanelProps) {
+export function GeminiAdvisorPanel({ summary, onApplySyntheticText }: GeminiAdvisorPanelProps) {
   const [geminiKey, setGeminiKey] = useState<string>('');
   const [geminiOutput, setGeminiOutput] = useState<string>('');
   const [geminiLoading, setGeminiLoading] = useState<boolean>(false);
@@ -22,7 +23,7 @@ export function GeminiAdvisorPanel({ scan, onApplySyntheticText }: GeminiAdvisor
     setGeminiLoading(true);
     try {
       const { generateComplianceAdvice } = await import('../services/geminiAdvisor');
-      const advice = await generateComplianceAdvice(geminiKey, scan);
+      const advice = await generateComplianceAdvice(geminiKey, summary);
       setGeminiOutput(advice);
     } catch (err) {
       setGeminiError(err instanceof Error ? err.message : 'Gemini request failed.');
@@ -47,16 +48,18 @@ export function GeminiAdvisorPanel({ scan, onApplySyntheticText }: GeminiAdvisor
     }
   };
 
+  const hasKey = Boolean(geminiKey.trim());
+
   return (
     <section className="panel" aria-labelledby="gemini-advisor-heading">
       <div className="toolbar-grid">
         <div>
           <h2 id="gemini-advisor-heading" className="section-heading">
-            5. Optional Google Gemini Compliance Advisor (Counts-Only)
+            5. Compliance Advisor · Offline Brief &amp; Optional Gemini 3.8 Flash (Counts-Only)
           </h2>
           <p className="panel-subtitle">
-            Zero raw text or PII ever leaves your browser. Only anonymized Cloud DLP entity counts or synthetic test
-            requests are sent if you supply a Gemini key.
+            Zero raw text or PII ever crosses the interface boundary. Generate a deterministic DPDP/PCI-DSS brief
+            completely offline, or enter a Gemini API key to send anonymized Cloud DLP entity counts only.
           </p>
         </div>
       </div>
@@ -72,7 +75,7 @@ export function GeminiAdvisorPanel({ scan, onApplySyntheticText }: GeminiAdvisor
             className="text-input mono"
             value={geminiKey}
             onChange={(e) => setGeminiKey(e.target.value)}
-            placeholder="AIza... (never stored or logged)"
+            placeholder="AIza... (leave empty for 100% offline brief)"
             autoComplete="off"
           />
         </div>
@@ -82,16 +85,20 @@ export function GeminiAdvisorPanel({ scan, onApplySyntheticText }: GeminiAdvisor
             type="button"
             className="btn"
             onClick={() => void handleGeminiAdvice()}
-            disabled={geminiLoading || !geminiKey.trim()}
+            disabled={geminiLoading}
           >
             <Sparkles size={15} aria-hidden="true" />
-            {geminiLoading ? 'Analyzing...' : 'Analyze Risk Counts with Gemini'}
+            {geminiLoading
+              ? 'Analyzing...'
+              : hasKey
+                ? 'Analyze Risk Counts with Gemini'
+                : 'Generate Offline Compliance Brief'}
           </button>
           <button
             type="button"
             className="btn"
             onClick={() => void handleGeminiSynthetic()}
-            disabled={geminiLoading || !geminiKey.trim()}
+            disabled={geminiLoading || !hasKey}
           >
             <Shuffle size={15} aria-hidden="true" />
             Generate Synthetic Fixture via Gemini

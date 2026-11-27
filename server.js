@@ -18,30 +18,37 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
   '.json': 'application/json; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
   '.ico': 'image/x-icon',
 };
 
 const COMPRESSIBLE_EXTS = new Set(['.html', '.js', '.css', '.svg', '.json', '.txt']);
+const compressedCache = new Map();
 
 const SECURITY_HEADERS = {
+  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Content-Security-Policy': [
     "default-src 'self'",
     "script-src 'self'",
-    "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    "style-src 'self'",
+    "font-src 'self' data:",
     "img-src 'self' data:",
     "connect-src 'self' https://generativelanguage.googleapis.com",
+    "worker-src 'self'",
+    "form-action 'self'",
     "object-src 'none'",
     "base-uri 'none'",
+    "frame-src 'none'",
     "frame-ancestors 'none'",
   ].join('; '),
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Permissions-Policy': 'camera=(), geolocation=(), microphone=()',
-  'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+  'Permissions-Policy': 'camera=(), geolocation=(), microphone=(), payment=()',
+  'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
 };
 
@@ -51,8 +58,23 @@ function logCloudJson(severity, message, extra = {}) {
   );
 }
 
+async function getCompressedBody(filePath, rawBuffer, encoding) {
+  const cacheKey = `${filePath}:${encoding}`;
+  if (compressedCache.has(cacheKey)) {
+    return compressedCache.get(cacheKey);
+  }
+  const out =
+    encoding === 'br'
+      ? await brotliCompressAsync(rawBuffer, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+      : await gzipAsync(rawBuffer);
+  compressedCache.set(cacheKey, out);
+  return out;
+}
+
 const server = http.createServer(async (req, res) => {
-  req.setTimeout(10000);
+  const startedAt = Date.now();
+  const traceHeader = req.headers['x-cloud-trace-context'];
+  const traceId = typeof traceHeader === 'string' ? traceHeader.split('/')[0] : undefined;
 
   if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
     res.writeHead(405, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
@@ -90,26 +112,37 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  let exists = true;
   try {
     const stat = await fs.promises.stat(filePath);
     if (stat.isDirectory()) {
       filePath = path.join(DIST_DIR, 'index.html');
     }
   } catch {
+    exists = false;
+  }
+
+  if (!exists) {
+    // Return genuine 404 for missing assets, dotfiles, or explicit extensions; SPA fallback only for client routes
+    if (decodedPath.startsWith('/assets/') || path.extname(decodedPath) !== '' || decodedPath.includes('/.')) {
+      res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+      return;
+    }
     filePath = path.join(DIST_DIR, 'index.html');
   }
 
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
   const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
-  const acceptEnc = req.headers['accept-encoding'] || '';
+  const acceptEnc = String(req.headers['accept-encoding'] || '');
 
   try {
     const content = await fs.promises.readFile(filePath);
 
-    if (COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
-      if (acceptEnc.includes('br')) {
-        const compressed = await brotliCompressAsync(content);
+    if (COMPRESSIBLE_EXTS.has(ext) && content.length > 1024) {
+      if (acceptEnc.includes('br') && !acceptEnc.includes('br;q=0')) {
+        const compressed = await getCompressedBody(filePath, content, 'br');
         res.writeHead(200, {
           ...SECURITY_HEADERS,
           'Content-Type': contentType,
@@ -121,8 +154,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (acceptEnc.includes('gzip')) {
-        const zipped = await gzipAsync(content);
+      if (acceptEnc.includes('gzip') && !acceptEnc.includes('gzip;q=0')) {
+        const zipped = await getCompressedBody(filePath, content, 'gzip');
         res.writeHead(200, {
           ...SECURITY_HEADERS,
           'Content-Type': contentType,
@@ -142,11 +175,30 @@ const server = http.createServer(async (req, res) => {
     });
     res.end(req.method === 'HEAD' ? undefined : content);
   } catch (err) {
-    logCloudJson('ERROR', 'Static asset read failure', { error: String(err) });
+    logCloudJson('ERROR', 'Static asset read failure', {
+      error: String(err),
+      ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
+    });
     res.writeHead(500, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
     res.end('Internal Server Error');
+  } finally {
+    if (decodedPath === '/' || res.statusCode >= 400) {
+      logCloudJson('INFO', 'HTTP request served', {
+        httpRequest: {
+          requestMethod: req.method,
+          requestUrl: decodedPath,
+          status: res.statusCode,
+          latency: `${((Date.now() - startedAt) / 1000).toFixed(3)}s`,
+        },
+        ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
+      });
+    }
   }
 });
+
+server.headersTimeout = 10_000;
+server.requestTimeout = 30_000;
+server.keepAliveTimeout = 65_000;
 
 server.listen(PORT, '0.0.0.0', () => {
   logCloudJson('INFO', `CipherShield listening on http://0.0.0.0:${PORT}`, { port: PORT });
@@ -157,4 +209,5 @@ process.on('SIGTERM', () => {
   server.close(() => {
     process.exit(0);
   });
+  setTimeout(() => process.exit(0), 8000).unref();
 });

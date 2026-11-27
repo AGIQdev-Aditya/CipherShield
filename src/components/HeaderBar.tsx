@@ -33,12 +33,12 @@ export function HeaderBar({ theme, networkState, onCycleTheme, onOpenPromptLog }
       <nav aria-label="Primary actions" className="header-actions">
         <span
           className={`status-pill ${hasUnexpectedCall ? 'status-pill-warn' : ''}`}
-          title="Runtime fetch/XHR monitor verifies zero PII leaves the browser"
+          title="Runtime fetch, XHR, sendBeacon, and Resource Performance monitor tracks external requests"
         >
           {hasUnexpectedCall ? <ShieldAlert size={14} aria-hidden="true" /> : <Lock size={14} aria-hidden="true" />}
           {hasUnexpectedCall
             ? `External Calls: ${networkState.externalCallsBlockedOrLogged}`
-            : `Zero-Egress Verified · 0 External Calls`}
+            : `Network Monitor · 0 External Calls`}
           {networkState.geminiOptInCalls > 0 ? ` (${networkState.geminiOptInCalls} Gemini)` : ''}
         </span>
 

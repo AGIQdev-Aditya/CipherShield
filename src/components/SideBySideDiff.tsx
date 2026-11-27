@@ -9,12 +9,16 @@ interface SideBySideDiffProps {
   diffViewMode: 'text' | 'csv';
   originalCsv: ParsedCsv;
   sanitizedCsv: ParsedCsv;
+  neutralizeFormulas: boolean;
   copied: boolean;
   onChangeDiffView: (view: 'text' | 'csv') => void;
+  onToggleNeutralizeFormulas: (neutralize: boolean) => void;
   onCopy: () => void;
   onDownloadSanitized: () => void;
   onDownloadAuditReport: () => void;
 }
+
+const CSV_PREVIEW_LIMIT = 200;
 
 /**
  * Renders live side-by-side Original vs. Sanitized text diff or RFC-4180 CSV cell comparison.
@@ -25,13 +29,17 @@ export function SideBySideDiff({
   diffViewMode,
   originalCsv,
   sanitizedCsv,
+  neutralizeFormulas,
   copied,
   onChangeDiffView,
+  onToggleNeutralizeFormulas,
   onCopy,
   onDownloadSanitized,
   onDownloadAuditReport,
 }: SideBySideDiffProps) {
   const modeLabel = MODE_OPTIONS.find((m) => m.id === mode)?.label ?? mode;
+  const previewRows = originalCsv.rows.slice(0, CSV_PREVIEW_LIMIT);
+  const isTruncatedPreview = originalCsv.rows.length > CSV_PREVIEW_LIMIT;
 
   return (
     <section aria-labelledby="diff-section-heading">
@@ -63,10 +71,26 @@ export function SideBySideDiff({
         )}
       </div>
 
+      {originalCsv.parseError && (
+        <p role="alert" className="alert-error csv-parse-alert">
+          {originalCsv.parseError}
+        </p>
+      )}
+
       {diffViewMode === 'csv' && originalCsv.isTabular && sanitizedCsv.isTabular ? (
         <div className="panel table-wrap">
           <div className="diff-card-header csv-banner">
-            <span className="csv-banner-title">RFC-4180 CSV Cell-by-Cell Diff (Original → Sanitized)</span>
+            <div>
+              <span className="csv-banner-title">RFC-4180 CSV Cell-by-Cell Diff (Original → Sanitized)</span>
+              <label className="checkbox-inline formula-toggle">
+                <input
+                  type="checkbox"
+                  checked={neutralizeFormulas}
+                  onChange={(e) => onToggleNeutralizeFormulas(e.target.checked)}
+                />
+                <span>Neutralize spreadsheet formulas (=, +, -, @) on export (CWE-1236)</span>
+              </label>
+            </div>
             <div className="action-row">
               <button type="button" className="btn" onClick={onCopy}>
                 {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
@@ -82,20 +106,37 @@ export function SideBySideDiff({
               </button>
             </div>
           </div>
+          {isTruncatedPreview && (
+            <p className="panel-subtitle csv-preview-note">
+              Showing first {CSV_PREVIEW_LIMIT} of {originalCsv.rows.length} rows in table preview — Copy &amp; Download
+              export all {originalCsv.rows.length} rows intact.
+            </p>
+          )}
           <table className="audit-table">
             <caption>CSV Original vs. Sanitized Cell Comparison</caption>
             <thead>
               <tr>
                 <th scope="col">Row</th>
-                {originalCsv.headers.map((h, idx) => (
-                  <th scope="col" key={`h-${idx}`} className="mono">
-                    {h}
-                  </th>
-                ))}
+                {originalCsv.headers.map((origH, idx) => {
+                  const cleanH = sanitizedCsv.headers[idx] ?? origH;
+                  const headerChanged = origH !== cleanH;
+                  return (
+                    <th scope="col" key={`h-${idx}`} className="mono">
+                      {headerChanged ? (
+                        <span>
+                          <span className="struck-cell">{origH}</span> →{' '}
+                          <span className="pii-redacted">{cleanH}</span>
+                        </span>
+                      ) : (
+                        origH
+                      )}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
-              {originalCsv.rows.map((row, rIdx) => (
+              {previewRows.map((row, rIdx) => (
                 <tr key={`row-${rIdx}`}>
                   <td className="mono">{rIdx + 1}</td>
                   {row.map((origCell, cIdx) => {

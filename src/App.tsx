@@ -8,11 +8,12 @@ import { PromptLogModal } from './components/PromptLogModal';
 import { SideBySideDiff } from './components/SideBySideDiff';
 import { SourceInputPanel } from './components/SourceInputPanel';
 import { parseCsvRows, redactCsvCells } from './engine/csvParser';
-import { buildCloudDlpSummary } from './engine/dlpTaxonomy';
+import { buildCloudDlpDeidentifyConfig, buildCloudDlpSummary } from './engine/dlpTaxonomy';
 import { installNetworkMonitor, NetworkMonitorState } from './engine/networkMonitor';
 import { redactText, sha256Hex } from './engine/redactor';
 import { DEFAULT_DETECTION_OPTIONS } from './engine/scanner';
 import { SAMPLE_DATASETS } from './engine/samples';
+import type { SafeScanSummary } from './services/geminiAdvisor';
 import { DetectionOptions, PiiCategory, RedactionMode } from './types/pii';
 
 /**
@@ -29,6 +30,7 @@ export default function App() {
   const [liveStatus, setLiveStatus] = useState<string>('');
   const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('system');
   const [diffViewMode, setDiffViewMode] = useState<'text' | 'csv'>('text');
+  const [neutralizeFormulas, setNeutralizeFormulas] = useState<boolean>(true);
   const [networkState, setNetworkState] = useState<NetworkMonitorState>({
     externalCallsBlockedOrLogged: 0,
     geminiOptInCalls: 0,
@@ -76,16 +78,49 @@ export default function App() {
   const originalCsv = useMemo(() => parseCsvRows(deferredText), [deferredText]);
   const sanitizedCsvBundle = useMemo(() => {
     if (!originalCsv.isTabular) {
-      return { headers: [] as string[], rows: [] as string[][], isTabular: false, serializedCsv: '' };
+      return { headers: [] as string[], rows: [] as string[][], isTabular: false, parseError: null, serializedCsv: '' };
     }
-    const { sanitizedRows, serializedCsv } = redactCsvCells(originalCsv, mode, effectiveOptions);
+    const { sanitizedHeaders, sanitizedRows, serializedCsv } = redactCsvCells(
+      originalCsv,
+      mode,
+      effectiveOptions,
+      neutralizeFormulas,
+    );
     return {
-      headers: originalCsv.headers,
+      headers: sanitizedHeaders,
       rows: sanitizedRows,
       isTabular: true,
+      parseError: null,
       serializedCsv,
     };
-  }, [originalCsv, mode, effectiveOptions]);
+  }, [originalCsv, mode, effectiveOptions, neutralizeFormulas]);
+
+  const safeSummary = useMemo<SafeScanSummary>(
+    () => ({
+      totalDetected: result.scan.totalDetected,
+      riskScoreBefore: result.scan.risk.scoreBefore,
+      riskLevelBefore: result.scan.risk.levelBefore,
+      luhnRejectedCount: result.scan.luhnRejectedCount,
+      counts: result.scan.counts,
+    }),
+    [result.scan],
+  );
+
+  const handleKeepOriginal = (value: string) => {
+    const cleanVal = value.trim();
+    if (!cleanVal) return;
+    if (effectiveOptions.allowlist.some((existing) => existing.toLowerCase() === cleanVal.toLowerCase())) {
+      return;
+    }
+    setAllowlistText((prev) => (prev.trim() ? `${prev.trim()}, ${cleanVal}` : cleanVal));
+    setLiveStatus(`Kept "${cleanVal}" unredacted in Allowlist.`);
+  };
+
+  const handleRestoreAllowlisted = (value: string) => {
+    const updated = effectiveOptions.allowlist.filter((item) => item.toLowerCase() !== value.toLowerCase());
+    setAllowlistText(updated.join(', '));
+    setLiveStatus(`Re-enabled PII redaction for "${value}".`);
+  };
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -165,6 +200,7 @@ export default function App() {
         scanDurationMs: result.scan.durationMs,
       },
       googleCloudDlpSummary: buildCloudDlpSummary(result.scan.counts),
+      googleCloudDlpDeidentifyConfig: buildCloudDlpDeidentifyConfig(result.scan.counts, mode),
     };
 
     const baseName = sourceFilename.replace(/\.(txt|csv)$/i, '') || 'audit';
@@ -228,21 +264,27 @@ export default function App() {
           diffViewMode={diffViewMode}
           originalCsv={originalCsv}
           sanitizedCsv={sanitizedCsvBundle}
+          neutralizeFormulas={neutralizeFormulas}
           copied={copied}
           onChangeDiffView={setDiffViewMode}
+          onToggleNeutralizeFormulas={setNeutralizeFormulas}
           onCopy={() => void handleCopy()}
           onDownloadSanitized={handleDownloadSanitized}
           onDownloadAuditReport={() => void handleDownloadAuditReport()}
         />
 
         <AuditLedger
+          segments={result.originalSegments}
           mappings={result.mappings}
           rejectedCards={result.scan.rejectedCards}
+          allowlist={effectiveOptions.allowlist}
+          onKeepOriginal={handleKeepOriginal}
+          onRestoreAllowlisted={handleRestoreAllowlisted}
           onDownloadBundle={triggerDownload}
         />
 
         <GeminiAdvisorPanel
-          scan={result.scan}
+          summary={safeSummary}
           onApplySyntheticText={(synthetic) => {
             setRawText(synthetic);
             setSourceFilename('gemini_synthetic_log.txt');

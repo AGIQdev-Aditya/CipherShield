@@ -804,3 +804,99 @@ dialog.prompt-dialog::backdrop {
   background: var(--bg-subtle);
   border: 1px solid var(--border-color);
 }
+
+.warn-ink {
+  color: var(--warn);
+}
+
+.csv-parse-alert {
+  margin-bottom: 12px;
+}
+
+.csv-preview-note {
+  margin: 0 0 10px;
+}
+
+.formula-toggle {
+  margin-top: 6px;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.entity-review-header {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.entity-review-box {
+  margin-bottom: 16px;
+}
+
+.btn-compact {
+  padding: 4px 10px;
+  font-size: 0.78rem;
+}
+
+.allowlist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.allowlist-label {
+  margin: 0;
+}
+
+.chip-btn {
+  border-radius: 999px;
+}
+
+.confidence-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.confidence-high {
+  background: color-mix(in srgb, var(--safe, #16a34a) 16%, transparent);
+  color: var(--safe, #16a34a);
+}
+
+.confidence-medium {
+  background: color-mix(in srgb, var(--warn, #d97706) 16%, transparent);
+  color: var(--warn, #d97706);
+}
+
+.selftest-box {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+}
+
+.selftest-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 0.84rem;
+}
+
+.selftest-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
