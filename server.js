@@ -2,7 +2,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+
+const brotliCompressAsync = promisify(zlib.brotliCompress);
+const gzipAsync = promisify(zlib.gzip);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, 'dist');
@@ -41,7 +45,13 @@ const SECURITY_HEADERS = {
   'Cross-Origin-Resource-Policy': 'same-origin',
 };
 
-const server = http.createServer((req, res) => {
+function logCloudJson(severity, message, extra = {}) {
+  process.stdout.write(
+    `${JSON.stringify({ severity, message, service: 'ciphershield', timestamp: new Date().toISOString(), ...extra })}\n`,
+  );
+}
+
+const server = http.createServer(async (req, res) => {
   req.setTimeout(10000);
 
   if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
@@ -50,9 +60,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const reqPath = req.url.split('?')[0];
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(req.url.split('?')[0]);
+  } catch {
+    res.writeHead(400, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
+    res.end('Bad Request');
+    return;
+  }
 
-  if (reqPath === '/healthz') {
+  if (decodedPath === '/healthz') {
     res.writeHead(200, {
       ...SECURITY_HEADERS,
       'Content-Type': 'application/json; charset=utf-8',
@@ -62,16 +79,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const safePath = reqPath === '/' ? 'index.html' : reqPath.replace(/^\/+/, '');
-  let filePath = path.resolve(DIST_DIR, safePath);
+  const normalized = decodedPath.replace(/^\/+/, '');
+  const candidate = normalized === '' ? 'index.html' : normalized;
+  let filePath = path.resolve(DIST_DIR, candidate);
+  const rel = path.relative(DIST_DIR, filePath);
 
-  if (!filePath.startsWith(DIST_DIR + path.sep) && filePath !== path.join(DIST_DIR, 'index.html')) {
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
     res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
     res.end('Forbidden');
     return;
   }
 
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (stat.isDirectory()) {
+      filePath = path.join(DIST_DIR, 'index.html');
+    }
+  } catch {
     filePath = path.join(DIST_DIR, 'index.html');
   }
 
@@ -80,16 +104,12 @@ const server = http.createServer((req, res) => {
   const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
   const acceptEnc = req.headers['accept-encoding'] || '';
 
-  fs.readFile(filePath, (err, content) => {
-    if (err) {
-      res.writeHead(500, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
-      res.end('Internal Server Error');
-      return;
-    }
+  try {
+    const content = await fs.promises.readFile(filePath);
 
     if (COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
       if (acceptEnc.includes('br')) {
-        const compressed = zlib.brotliCompressSync(content);
+        const compressed = await brotliCompressAsync(content);
         res.writeHead(200, {
           ...SECURITY_HEADERS,
           'Content-Type': contentType,
@@ -102,7 +122,7 @@ const server = http.createServer((req, res) => {
       }
 
       if (acceptEnc.includes('gzip')) {
-        const zipped = zlib.gzipSync(content);
+        const zipped = await gzipAsync(content);
         res.writeHead(200, {
           ...SECURITY_HEADERS,
           'Content-Type': contentType,
@@ -121,14 +141,19 @@ const server = http.createServer((req, res) => {
       'Cache-Control': cacheControl,
     });
     res.end(req.method === 'HEAD' ? undefined : content);
-  });
+  } catch (err) {
+    logCloudJson('ERROR', 'Static asset read failure', { error: String(err) });
+    res.writeHead(500, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
+    res.end('Internal Server Error');
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  process.stdout.write(`CipherShield listening on http://0.0.0.0:${PORT}\n`);
+  logCloudJson('INFO', `CipherShield listening on http://0.0.0.0:${PORT}`, { port: PORT });
 });
 
 process.on('SIGTERM', () => {
+  logCloudJson('INFO', 'Received SIGTERM, shutting down gracefully');
   server.close(() => {
     process.exit(0);
   });

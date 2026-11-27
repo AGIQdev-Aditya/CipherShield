@@ -4,7 +4,8 @@ import { DEFAULT_DETECTION_OPTIONS, scanTextForPii } from '../src/engine/scanner
 import { redactText } from '../src/engine/redactor';
 import { buildCloudDlpSummary } from '../src/engine/dlpTaxonomy';
 import { generateSyntheticChaosLog, SAMPLE_DATASETS } from '../src/engine/samples';
-import { parseCsvRows } from '../src/engine/csvParser';
+import { parseCsvRows, redactCsvCells, serializeCsvRows } from '../src/engine/csvParser';
+import { decryptPseudonymLedger, encryptPseudonymLedger } from '../src/engine/cryptoVault';
 
 describe('Luhn & Financial Validators', () => {
   it('validates standard Luhn credit card numbers', () => {
@@ -83,6 +84,43 @@ describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
       customRule: { enabled: true, label: 'REDOS', pattern: '(a+)+' },
     });
     expect(redosCustom.customRuleError).toContain('ReDoS');
+  });
+
+  it('detects lowercase/mixed-case PANs, toll-free 1800 numbers, and international phones', () => {
+    const sample =
+      'PANs: abcde1234f and AbCdE9876k | Toll-free: 1800-419-0155 | UK: +44 20 7946 0958 | IN: +91 9876 543 210';
+    const scan = scanTextForPii(sample);
+    expect(scan.counts.PAN).toBe(2);
+    expect(scan.counts.PHONE).toBe(3);
+  });
+
+  it('masks variable-length credit cards including 15-digit Amex cleanly', () => {
+    const amex = redactText('Amex: 3782-822463-10005', 'partial');
+    expect(amex.sanitizedText).toBe('Amex: XXXX-XXXXXX-X0005');
+  });
+
+  it('serializes RFC-4180 CSV cells containing commas and quotes without breaking columns', () => {
+    const csv = 'name,note,email\n"Sharma, Aditya","Quote ""here""",aditya@test.in';
+    const parsed = parseCsvRows(csv);
+    const out = redactCsvCells(parsed, 'full', DEFAULT_DETECTION_OPTIONS);
+    expect(out.sanitizedRows[0]).toEqual(['Sharma, Aditya', 'Quote "here"', '[REDACTED]']);
+    const reparsed = parseCsvRows(out.serializedCsv);
+    expect(reparsed.isTabular).toBe(true);
+    expect(reparsed.rows[0][0]).toBe('Sharma, Aditya');
+    expect(serializeCsvRows(['a'], [['x,y']])).toBe('a\n"x,y"');
+  });
+
+  it('encrypts and decrypts pseudonym ledgers with PBKDF2 + AES-256-GCM and rejects wrong passphrases', async () => {
+    const res = redactText('User aarav@corp.in charged 4532-0151-1283-0366', 'pseudonymize');
+    const bundle = await encryptPseudonymLedger(res.mappings, 'strong-pass-2026');
+    expect(bundle.algorithm).toBe('AES-GCM');
+    expect(bundle.iterations).toBe(100_000);
+
+    const restored = await decryptPseudonymLedger(bundle, 'strong-pass-2026');
+    expect(restored.length).toBe(2);
+    expect(restored[0].sampleValue).toBe('aarav@corp.in');
+
+    await expect(decryptPseudonymLedger(bundle, 'wrong-pass')).rejects.toThrow(/Decryption failed/);
   });
 
   it('maps detected counts to Google Cloud DLP InfoTypes cleanly', () => {

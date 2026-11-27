@@ -50,14 +50,14 @@ const CATEGORY_RISK_WEIGHT: Record<PiiCategory, number> = {
 
 // ReDoS-safe bounded regex patterns
 const REGEX_EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
-const REGEX_PAN = /\b[A-Z]{5}[0-9]{4}[A-Z]\b/g;
+const REGEX_PAN = /\b[A-Za-z]{5}[0-9]{4}[A-Za-z]\b/g;
 const REGEX_AADHAAR = /(?<![\d-])\d{4}[\s-]?\d{4}[\s-]?\d{4}(?![\d-])/g;
-const REGEX_CARD_FORMATTED = /(?<![\d.-])\d{4}(?:[-\s]\d{4}){2,3}(?:[-\s]\d{1,3})?(?![\d.-])/g;
+const REGEX_CARD_FORMATTED = /(?<![\d.-])\d{4}(?:[-\s]\d{4}){2,3}(?:[-\s]\d{1,3})?(?![\d.-])|(?<![\d.-])\d{4}[-\s]\d{6}[-\s]\d{5}(?![\d.-])/g;
 const REGEX_CARD_CONTIGUOUS = /(?<![\d.])\d{13,19}(?![\d.])/g;
 const REGEX_IPV4 = /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d|\.\d)/g;
 const REGEX_IPV6 = /(?<![\w:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\w:])/g;
 const REGEX_PHONE =
-  /(?<![\d\w.])(?:\+91[\s.-]?[6-9]\d{4}[\s.-]?\d{5}|0?[6-9]\d{9}|(?:\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4})(?![\d\w])/g;
+  /(?<![\d\w.-])(?:\+91[\s.-]?(?:[6-9]\d{4}[\s.-]?\d{5}|[6-9]\d{3}[\s.-]?\d{3}[\s.-]?\d{3})|0?[6-9]\d{9}|1800[\s.-]?\d{3,4}[\s.-]?\d{4}|(?:\+\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]\d{3,4}[\s.-]\d{4})(?:\s*(?:x|ext\.?)\s*\d{2,5})?(?![\d\w-])/gi;
 
 function normalizeKey(category: PiiCategory, value: string): string {
   switch (category) {
@@ -235,14 +235,15 @@ export function scanTextForPii(text: string, options: DetectionOptions = DEFAULT
     REGEX_PHONE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = REGEX_PHONE.exec(text)) !== null) {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(m[0])) continue;
+      // Exclude ISO / dot / US date patterns like 2026-11-27, 2026.11.27, or 11-27-2026
+      if (/^(?:\d{4}[-.]\d{2}[-.]\d{2}|\d{2}[-./]\d{2}[-./]\d{4})$/.test(m[0])) continue;
       rawMatches.push({
         category: 'PHONE',
         value: m[0],
         normalizedKey: normalizeKey('PHONE', m[0]),
         start: m.index,
         end: m.index + m[0].length,
-        metadata: m[0].trim().startsWith('+91') ? 'IN Phone' : 'Phone Number',
+        metadata: m[0].trim().startsWith('+91') ? 'IN Phone' : m[0].trim().startsWith('1800') ? 'Toll-Free' : 'Phone Number',
         validatedBy: 'FORMAT',
       });
     }

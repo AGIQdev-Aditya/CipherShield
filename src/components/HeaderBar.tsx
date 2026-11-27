@@ -1,15 +1,19 @@
-import { FileText, Lock, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { FileText, Lock, Moon, ShieldAlert, ShieldCheck, Sun } from 'lucide-react';
+import { NetworkMonitorState } from '../engine/networkMonitor';
 
 interface HeaderBarProps {
   theme: 'system' | 'dark' | 'light';
+  networkState: NetworkMonitorState;
   onCycleTheme: () => void;
   onOpenPromptLog: () => void;
 }
 
 /**
- * Top landmark header with client-side security badge, Prompt Log modal trigger, and theme switcher.
+ * Top landmark header with live Zero-Egress network telemetry badge, Prompt Log trigger, and theme switcher.
  */
-export function HeaderBar({ theme, onCycleTheme, onOpenPromptLog }: HeaderBarProps) {
+export function HeaderBar({ theme, networkState, onCycleTheme, onOpenPromptLog }: HeaderBarProps) {
+  const hasUnexpectedCall = networkState.externalCallsBlockedOrLogged > 0;
+
   return (
     <header className="site-header">
       <div className="brand-group">
@@ -27,9 +31,15 @@ export function HeaderBar({ theme, onCycleTheme, onOpenPromptLog }: HeaderBarPro
       </div>
 
       <nav aria-label="Primary actions" className="header-actions">
-        <span className="status-pill" title="Enforced by CSP connect-src 'self' and pure local JS">
-          <Lock size={14} aria-hidden="true" />
-          100% Client-Side · 0 Network Egress
+        <span
+          className={`status-pill ${hasUnexpectedCall ? 'status-pill-warn' : ''}`}
+          title="Runtime fetch/XHR monitor verifies zero PII leaves the browser"
+        >
+          {hasUnexpectedCall ? <ShieldAlert size={14} aria-hidden="true" /> : <Lock size={14} aria-hidden="true" />}
+          {hasUnexpectedCall
+            ? `External Calls: ${networkState.externalCallsBlockedOrLogged}`
+            : `Zero-Egress Verified · 0 External Calls`}
+          {networkState.geminiOptInCalls > 0 ? ` (${networkState.geminiOptInCalls} Gemini)` : ''}
         </span>
 
         <button type="button" className="btn" onClick={onOpenPromptLog}>

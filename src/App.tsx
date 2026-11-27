@@ -7,8 +7,9 @@ import { PolicyControls } from './components/PolicyControls';
 import { PromptLogModal } from './components/PromptLogModal';
 import { SideBySideDiff } from './components/SideBySideDiff';
 import { SourceInputPanel } from './components/SourceInputPanel';
-import { parseCsvRows } from './engine/csvParser';
+import { parseCsvRows, redactCsvCells } from './engine/csvParser';
 import { buildCloudDlpSummary } from './engine/dlpTaxonomy';
+import { installNetworkMonitor, NetworkMonitorState } from './engine/networkMonitor';
 import { redactText, sha256Hex } from './engine/redactor';
 import { DEFAULT_DETECTION_OPTIONS } from './engine/scanner';
 import { SAMPLE_DATASETS } from './engine/samples';
@@ -16,7 +17,7 @@ import { DetectionOptions, PiiCategory, RedactionMode } from './types/pii';
 
 /**
  * Root CipherShield workspace coordinating deferred client-side PII scanning,
- * redaction modes, CSV diff rendering, and zero-egress audit exports.
+ * redaction modes, RFC-4180 CSV diff rendering, zero-egress network monitoring, and audit exports.
  */
 export default function App() {
   const [rawText, setRawText] = useState<string>(SAMPLE_DATASETS[0].content);
@@ -28,9 +29,24 @@ export default function App() {
   const [liveStatus, setLiveStatus] = useState<string>('');
   const [theme, setTheme] = useState<'system' | 'dark' | 'light'>('system');
   const [diffViewMode, setDiffViewMode] = useState<'text' | 'csv'>('text');
+  const [networkState, setNetworkState] = useState<NetworkMonitorState>({
+    externalCallsBlockedOrLogged: 0,
+    geminiOptInCalls: 0,
+    recentEvents: [],
+  });
 
   const dialogRef = useRef<HTMLDialogElement>(null);
   const deferredText = useDeferredValue(rawText);
+
+  useEffect(() => {
+    return installNetworkMonitor((event, isGemini) => {
+      setNetworkState((prev) => ({
+        externalCallsBlockedOrLogged: prev.externalCallsBlockedOrLogged + (isGemini ? 0 : 1),
+        geminiOptInCalls: prev.geminiOptInCalls + (isGemini ? 1 : 0),
+        recentEvents: [event, ...prev.recentEvents].slice(0, 10),
+      }));
+    });
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -58,10 +74,18 @@ export default function App() {
   );
 
   const originalCsv = useMemo(() => parseCsvRows(deferredText), [deferredText]);
-  const sanitizedCsv = useMemo(
-    () => (originalCsv.isTabular ? parseCsvRows(result.sanitizedText) : { headers: [], rows: [], isTabular: false }),
-    [originalCsv.isTabular, result.sanitizedText],
-  );
+  const sanitizedCsvBundle = useMemo(() => {
+    if (!originalCsv.isTabular) {
+      return { headers: [] as string[], rows: [] as string[][], isTabular: false, serializedCsv: '' };
+    }
+    const { sanitizedRows, serializedCsv } = redactCsvCells(originalCsv, mode, effectiveOptions);
+    return {
+      headers: originalCsv.headers,
+      rows: sanitizedRows,
+      isTabular: true,
+      serializedCsv,
+    };
+  }, [originalCsv, mode, effectiveOptions]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -95,9 +119,12 @@ export default function App() {
     setLiveStatus(`Downloaded ${filename}.`);
   };
 
+  const activeExportText =
+    diffViewMode === 'csv' && sanitizedCsvBundle.isTabular ? sanitizedCsvBundle.serializedCsv : result.sanitizedText;
+
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(result.sanitizedText);
+      await navigator.clipboard.writeText(activeExportText);
       setCopied(true);
       setLiveStatus('Sanitized output copied to clipboard.');
       window.setTimeout(() => setCopied(false), 1800);
@@ -110,13 +137,13 @@ export default function App() {
     const ext = sourceFilename.toLowerCase().endsWith('.csv') ? 'csv' : 'txt';
     const baseName = sourceFilename.replace(/\.(txt|csv)$/i, '') || 'sanitized_output';
     const mime = ext === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8';
-    triggerDownload(result.sanitizedText, `sanitized_${baseName}.${ext}`, mime);
+    triggerDownload(activeExportText, `sanitized_${baseName}.${ext}`, mime);
   };
 
   const handleDownloadAuditReport = async () => {
     const [rawSha256, sanitizedSha256] = await Promise.all([
       sha256Hex(deferredText),
-      sha256Hex(result.sanitizedText),
+      sha256Hex(activeExportText),
     ]);
 
     const certificate = {
@@ -129,6 +156,7 @@ export default function App() {
         originalSha256: rawSha256,
         sanitizedSha256,
       },
+      networkMonitor: networkState,
       exposureRisk: result.scan.risk,
       metrics: {
         totalRedacted: result.scan.totalDetected,
@@ -155,6 +183,7 @@ export default function App() {
 
       <HeaderBar
         theme={theme}
+        networkState={networkState}
         onCycleTheme={() => setTheme((p) => (p === 'system' ? 'dark' : p === 'dark' ? 'light' : 'system'))}
         onOpenPromptLog={() => dialogRef.current?.showModal()}
       />
@@ -198,7 +227,7 @@ export default function App() {
           result={result}
           diffViewMode={diffViewMode}
           originalCsv={originalCsv}
-          sanitizedCsv={sanitizedCsv}
+          sanitizedCsv={sanitizedCsvBundle}
           copied={copied}
           onChangeDiffView={setDiffViewMode}
           onCopy={() => void handleCopy()}
@@ -206,7 +235,11 @@ export default function App() {
           onDownloadAuditReport={() => void handleDownloadAuditReport()}
         />
 
-        <AuditLedger mappings={result.mappings} rejectedCards={result.scan.rejectedCards} />
+        <AuditLedger
+          mappings={result.mappings}
+          rejectedCards={result.scan.rejectedCards}
+          onDownloadBundle={triggerDownload}
+        />
 
         <GeminiAdvisorPanel
           scan={result.scan}

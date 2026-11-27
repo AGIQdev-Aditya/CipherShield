@@ -24,10 +24,8 @@ function partialMaskValue(entity: PiiEntity): string {
 
   switch (category) {
     case 'CREDIT_CARD': {
-      const digits = value.replace(/\D/g, '');
-      const last4 = digits.slice(-4);
-      const separator = value.includes('-') ? '-' : value.includes(' ') ? ' ' : '-';
-      return `XXXX${separator}XXXX${separator}XXXX${separator}${last4}`;
+      // Preserve exact digit count & delimiters (13-19 digits including 15-digit Amex 4-6-5)
+      return value.replace(/\d(?=(?:\D*\d){4})/g, 'X');
     }
 
     case 'AADHAAR': {

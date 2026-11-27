@@ -16,6 +16,7 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(container.querySelector('footer')).not.toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: /CipherShield/i })).toBeTruthy();
     expect(screen.getByText(/Skip to main content/i)).toBeTruthy();
+    expect(screen.getByText(/Zero-Egress Verified · 0 External Calls/i)).toBeTruthy();
   });
 
   it('safely renders XSS probe strings as plain text without injecting script nodes', () => {
