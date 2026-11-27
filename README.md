@@ -31,8 +31,8 @@
 
 ```bash
 npm run lint    # ESLint + TypeScript + eslint-plugin-jsx-a11y (0 errors)
-npm test        # 27 Vitest unit, crypto, CSV, UI & axe-core WCAG tests
-npm run build   # Strict tsc --noEmit + Vite production build
+npm test        # 28 Vitest unit, ReDoS, crypto, CSV, UI & axe-core WCAG tests
+npm run build   # Strict tsc --noEmit + Vite production + Web Worker build
 npm start       # Serves dist/ on 0.0.0.0:8080 with async Brotli/gzip & strict CSP
 ```
 

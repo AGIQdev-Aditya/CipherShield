@@ -7,14 +7,17 @@ import { PolicyControls } from './components/PolicyControls';
 import { PromptLogModal } from './components/PromptLogModal';
 import { SideBySideDiff } from './components/SideBySideDiff';
 import { SourceInputPanel } from './components/SourceInputPanel';
-import { parseCsvRows, redactCsvCells } from './engine/csvParser';
+import { parseCsvRows, ParsedCsv, redactCsvCells } from './engine/csvParser';
 import { buildCloudDlpDeidentifyConfig, buildCloudDlpSummary } from './engine/dlpTaxonomy';
 import { installNetworkMonitor, NetworkMonitorState } from './engine/networkMonitor';
 import { redactText, sha256Hex } from './engine/redactor';
 import { DEFAULT_DETECTION_OPTIONS } from './engine/scanner';
 import { SAMPLE_DATASETS } from './engine/samples';
 import type { SafeScanSummary } from './services/geminiAdvisor';
-import { DetectionOptions, PiiCategory, RedactionMode } from './types/pii';
+import { DetectionOptions, PiiCategory, RedactionMode, RedactionResult } from './types/pii';
+import type { SanitizedCsvBundle, WorkerScanRequest, WorkerScanResponse } from './workers/scanner.worker';
+
+const WORKER_OFFLOAD_CHARS = 8_000;
 
 /**
  * Root CipherShield workspace coordinating deferred client-side PII scanning,
@@ -38,7 +41,127 @@ export default function App() {
   });
 
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const requestIdRef = useRef<number>(0);
   const deferredText = useDeferredValue(rawText);
+  const expectCsv = sourceFilename.toLowerCase().endsWith('.csv') || diffViewMode === 'csv';
+
+  const effectiveOptions = useMemo<DetectionOptions>(() => {
+    const parsedAllowlist = allowlistText
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return {
+      ...options,
+      allowlist: parsedAllowlist,
+    };
+  }, [options, allowlistText]);
+
+  const shouldUseWorker =
+    typeof Worker !== 'undefined' &&
+    (deferredText.length >= WORKER_OFFLOAD_CHARS || effectiveOptions.customRule.enabled);
+
+  const [workerPayload, setWorkerPayload] = useState<{
+    result: RedactionResult;
+    originalCsv: ParsedCsv;
+    sanitizedCsvBundle: SanitizedCsvBundle;
+  } | null>(null);
+  const [workerTimeoutError, setWorkerTimeoutError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!shouldUseWorker) {
+      return;
+    }
+
+    if (!workerRef.current) {
+      workerRef.current = new Worker(new URL('./workers/scanner.worker.ts', import.meta.url), {
+        type: 'module',
+      });
+    }
+
+    const activeWorker = workerRef.current;
+    const reqId = requestIdRef.current + 1;
+    requestIdRef.current = reqId;
+
+    const handleMessage = (event: MessageEvent<WorkerScanResponse>) => {
+      if (event.data.requestId !== requestIdRef.current) return;
+      window.clearTimeout(watchdog);
+      setWorkerTimeoutError(null);
+      setWorkerPayload({
+        result: event.data.result,
+        originalCsv: event.data.originalCsv,
+        sanitizedCsvBundle: event.data.sanitizedCsvBundle,
+      });
+    };
+
+    activeWorker.addEventListener('message', handleMessage);
+
+    const watchdog = window.setTimeout(() => {
+      if (requestIdRef.current === reqId) {
+        activeWorker.terminate();
+        workerRef.current = null;
+        setWorkerTimeoutError('Scan aborted after 2000ms inside isolated Web Worker (ReDoS protection).');
+      }
+    }, 2000);
+
+    const payload: WorkerScanRequest = {
+      requestId: reqId,
+      text: deferredText,
+      mode,
+      options: effectiveOptions,
+      neutralizeFormulas,
+      expectCsv,
+    };
+    activeWorker.postMessage(payload);
+
+    return () => {
+      window.clearTimeout(watchdog);
+      activeWorker.removeEventListener('message', handleMessage);
+    };
+  }, [shouldUseWorker, deferredText, mode, effectiveOptions, neutralizeFormulas, expectCsv]);
+
+  useEffect(() => {
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
+
+  const syncResult = useMemo(
+    () => (shouldUseWorker && workerPayload ? workerPayload.result : redactText(deferredText, mode, effectiveOptions)),
+    [shouldUseWorker, workerPayload, deferredText, mode, effectiveOptions],
+  );
+
+  const syncOriginalCsv = useMemo(
+    () => (shouldUseWorker && workerPayload ? workerPayload.originalCsv : parseCsvRows(deferredText, expectCsv)),
+    [shouldUseWorker, workerPayload, deferredText, expectCsv],
+  );
+
+  const syncSanitizedCsvBundle = useMemo<SanitizedCsvBundle>(() => {
+    if (shouldUseWorker && workerPayload) {
+      return workerPayload.sanitizedCsvBundle;
+    }
+    if (!syncOriginalCsv.isTabular) {
+      return { headers: [] as string[], rows: [] as string[][], isTabular: false, parseError: null, serializedCsv: '' };
+    }
+    const { sanitizedHeaders, sanitizedRows, serializedCsv } = redactCsvCells(
+      syncOriginalCsv,
+      mode,
+      effectiveOptions,
+      neutralizeFormulas,
+    );
+    return {
+      headers: sanitizedHeaders,
+      rows: sanitizedRows,
+      isTabular: true,
+      parseError: null,
+      serializedCsv,
+    };
+  }, [shouldUseWorker, workerPayload, syncOriginalCsv, mode, effectiveOptions, neutralizeFormulas]);
+
+  const result = syncResult;
+  const originalCsv = syncOriginalCsv;
+  const sanitizedCsvBundle = syncSanitizedCsvBundle;
 
   useEffect(() => {
     return installNetworkMonitor((event, isGemini) => {
@@ -58,42 +181,6 @@ export default function App() {
       root.setAttribute('data-theme', theme);
     }
   }, [theme]);
-
-  const effectiveOptions = useMemo<DetectionOptions>(() => {
-    const parsedAllowlist = allowlistText
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return {
-      ...options,
-      allowlist: parsedAllowlist,
-    };
-  }, [options, allowlistText]);
-
-  const result = useMemo(
-    () => redactText(deferredText, mode, effectiveOptions),
-    [deferredText, mode, effectiveOptions],
-  );
-
-  const originalCsv = useMemo(() => parseCsvRows(deferredText), [deferredText]);
-  const sanitizedCsvBundle = useMemo(() => {
-    if (!originalCsv.isTabular) {
-      return { headers: [] as string[], rows: [] as string[][], isTabular: false, parseError: null, serializedCsv: '' };
-    }
-    const { sanitizedHeaders, sanitizedRows, serializedCsv } = redactCsvCells(
-      originalCsv,
-      mode,
-      effectiveOptions,
-      neutralizeFormulas,
-    );
-    return {
-      headers: sanitizedHeaders,
-      rows: sanitizedRows,
-      isTabular: true,
-      parseError: null,
-      serializedCsv,
-    };
-  }, [originalCsv, mode, effectiveOptions, neutralizeFormulas]);
 
   const safeSummary = useMemo<SafeScanSummary>(
     () => ({
@@ -250,7 +337,7 @@ export default function App() {
           mode={mode}
           options={options}
           allowlistText={allowlistText}
-          customRuleError={result.scan.customRuleError}
+          customRuleError={(shouldUseWorker ? workerTimeoutError : null) ?? result.scan.customRuleError}
           onChangeMode={setMode}
           onChangeOptions={setOptions}
           onChangeAllowlist={setAllowlistText}

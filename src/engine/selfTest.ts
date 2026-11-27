@@ -45,11 +45,8 @@ export function runAdversarialSelfTest(): SelfTestReport {
     detail: `Detected PAN count=${panScan.counts.PAN}`,
   });
 
-  // 3. Aadhaar UIDAI Verhoeff validation separation
-  const aadhaarScan = scanTextForPii('valid 2341 5678 9120 invalid 2341 5678 9121', {
-    ...opts,
-    strictAadhaarVerhoeff: true,
-  });
+  // 3. Aadhaar UIDAI Verhoeff validation discrimination (strict by default)
+  const aadhaarScan = scanTextForPii('valid 2341 5678 9120 invalid 2341 5678 9121', opts);
   cases.push({
     id: 'verhoeff-uidai',
     title: 'Aadhaar Verhoeff Checksum Discrimination',
@@ -67,7 +64,7 @@ export function runAdversarialSelfTest(): SelfTestReport {
   });
 
   // 5. Partial Amex 15-digit mask + non-redetectable PAN mask + 0/100 residual score
-  const redactOut = redactText('amex 3782-822463-10005 pan ABCDE1234F', 'partial', opts);
+  const redactOut = redactText('amex 3782-822463-10005 pan: ABCDE1234F', 'partial', opts);
   const amexOk = redactOut.sanitizedText.includes('XXXX-XXXXXX-X0005');
   const panOk = redactOut.sanitizedText.includes('A****1234F');
   cases.push({
@@ -95,10 +92,10 @@ export function runAdversarialSelfTest(): SelfTestReport {
     detail: `Phones=${phoneScan.counts.PHONE}, validator=${phoneScan.entities[0]?.validatedBy ?? 'none'}`,
   });
 
-  // 8. ReDoS guard on unsafe custom regex
+  // 8. ReDoS guard on unsafe nested/backreference custom regexes
   const redosScan = scanTextForPii('hello world', {
     ...opts,
-    customRule: { enabled: true, label: 'EVIL', pattern: '(a+)+$' },
+    customRule: { enabled: true, label: 'EVIL', pattern: '(?:[a-z]+\\s?)+$' },
   });
   cases.push({
     id: 'redos-guard',

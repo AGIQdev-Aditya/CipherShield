@@ -23,7 +23,7 @@ export const DEFAULT_DETECTION_OPTIONS: DetectionOptions = {
     UPI_ID: true,
     CUSTOM: true,
   },
-  strictAadhaarVerhoeff: false,
+  strictAadhaarVerhoeff: true,
   fullMaskTemplate: 'generic',
   allowlist: ['127.0.0.1'],
   customRule: {
@@ -72,13 +72,76 @@ const REGEX_IPV6 =
 const REGEX_PHONE_CANDIDATE =
   /(?<![\d\w.-])(?:\+91[ \t.-]?(?:[6-9]\d{4}[ \t.-]?\d{5}|[6-9]\d{3}[ \t.-]?\d{3}[ \t.-]?\d{3}|[1-9]\d{1,3}[ \t.-]?\d{6,8})|0?[6-9]\d{9}|[6-9]\d{4}[ \t.-]\d{5}|0[1-9]\d{1,3}[ \t.-]\d{6,8}|1[ \t.-]?800[ \t.-]?\d{3,4}[ \t.-]?\d{4}|(?:\+\d{1,3}[ \t.-]?)?\(?\d{2,4}\)?[ \t.-]\d{2,4}[ \t.-]\d{4}(?:[ \t.-]\d{2,4})?)(?:[ \t]*(?:x|ext\.?)[ \t]*\d{2,5})?(?![\d\w-])/gi;
 
-function hasUnsafeRegexConstruct(pattern: string): string | null {
+/**
+ * Depth-aware static analyzer rejecting catastrophic backtracking (ReDoS),
+ * nested quantifiers, quantified alternations, lookarounds, and backreferences.
+ */
+export function hasUnsafeRegexConstruct(pattern: string): string | null {
   if (pattern.length > 120) {
     return 'Custom RegExp exceeds 120-character safety limit.';
   }
-  if (/\([^)]*[+*][^)]*\)[+*]|\([^)]*\|[^)]*\)[+*]|\([^)]*\?\)\{\d+,\}/.test(pattern)) {
-    return 'Potential catastrophic backtracking (ReDoS) pattern rejected.';
+  if (/\\[1-9]/.test(pattern)) {
+    return 'Potential ReDoS: backreferences are disallowed in custom RegExp rules.';
   }
+  if (/\(\?[=!<]/.test(pattern)) {
+    return 'Potential ReDoS: lookaround assertions are disallowed in custom RegExp rules.';
+  }
+  if (/(\.\*|\.\+|\\s\*|\\w\+)\s*\1|(?:\.\*|\.\+){2}/.test(pattern)) {
+    return 'Potential ReDoS: adjacent unbounded wildcards rejected.';
+  }
+
+  // Track group stack for nested quantifiers ((a+)+, (a|aa)+, (?:[a-z]+\s?)+, (a+){2,})
+  const stack: Array<{ hasQuantifier: boolean; hasAlternation: boolean }> = [
+    { hasQuantifier: false, hasAlternation: false },
+  ];
+  let inCharClass = false;
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === '\\') {
+      i += 1;
+      continue;
+    }
+    if (inCharClass) {
+      if (ch === ']') inCharClass = false;
+      continue;
+    }
+    if (ch === '[') {
+      inCharClass = true;
+      continue;
+    }
+    if (ch === '(') {
+      stack.push({ hasQuantifier: false, hasAlternation: false });
+      continue;
+    }
+    if (ch === ')') {
+      const closed = stack.length > 1 ? stack.pop()! : { hasQuantifier: false, hasAlternation: false };
+      const next = pattern[i + 1] ?? '';
+      const hasOuterQuantifier = next === '+' || next === '*' || next === '{';
+      if (hasOuterQuantifier && (closed.hasQuantifier || closed.hasAlternation)) {
+        return 'Potential catastrophic backtracking (ReDoS) nested quantifier/alternation rejected.';
+      }
+      const parent = stack[stack.length - 1];
+      if (hasOuterQuantifier || closed.hasQuantifier) {
+        parent.hasQuantifier = true;
+      }
+      if (closed.hasAlternation) {
+        parent.hasAlternation = true;
+      }
+      continue;
+    }
+    if (ch === '|') {
+      stack[stack.length - 1].hasAlternation = true;
+      continue;
+    }
+    if (ch === '+' || ch === '*' || (ch === '?' && pattern[i - 1] !== '(') || ch === '{') {
+      if (ch === '{' && !/^\{\d+(?:,\d*)?\}/.test(pattern.slice(i))) {
+        continue;
+      }
+      stack[stack.length - 1].hasQuantifier = true;
+    }
+  }
+
   return null;
 }
 
@@ -327,7 +390,7 @@ export function scanTextForPii(
     }
   }
 
-  // 6. Indian PAN (Case-insensitive with 4th-char entity code confidence check)
+  // 6. Indian PAN (Consistent holder-type code + context validation across all casings)
   if (options.enabledCategories.PAN) {
     REGEX_PAN.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -337,10 +400,13 @@ export function scanTextForPii(
       const validCode = hasValidPanEntityCode(value);
       const rawWindow = text.slice(Math.max(0, m.index - 24), m.index);
       const localClause = (rawWindow.split(/[\n,;|]/).pop() ?? '').toLowerCase();
-      const hasPanContext = /\b(?:pan|tax|kyc|tin)\b/.test(localClause);
+      const hasPanContext = /\b(?:pan|tax|kyc|tin|nsdl|income)\b/.test(localClause);
 
-      // Guard lowercase random tokens (e.g. "order2024a") unless valid holder code AND local PAN context
-      if (!isUpper && (!validCode || !hasPanContext)) {
+      // Require valid 4th-char ITD holder code (P/C/H/A/B/G/J/L/F/T), or explicit local PAN context;
+      // lowercase/mixed-case always require both valid holder code and explicit context.
+      if (isUpper) {
+        if (!validCode && !hasPanContext) continue;
+      } else if (!validCode || !hasPanContext) {
         continue;
       }
 
@@ -351,7 +417,7 @@ export function scanTextForPii(
         start: m.index,
         end: m.index + value.length,
         confidence: validCode ? 'HIGH' : 'MEDIUM',
-        metadata: describePanEntity(value),
+        metadata: validCode ? describePanEntity(value) : 'PAN Context Match (Non-standard 4th char)',
         validatedBy: 'FORMAT',
       });
     }
@@ -392,10 +458,15 @@ export function scanTextForPii(
     } else {
       try {
         const customRegex = new RegExp(patternStr, 'g');
+        const customStart = performance.now();
         let m: RegExpExecArray | null;
         let guard = 0;
         while ((m = customRegex.exec(text)) !== null && guard < 2000) {
           guard += 1;
+          if (guard % 25 === 0 && performance.now() - customStart > 40) {
+            customRuleError = 'Custom RegExp aborted: exceeded 40ms ReDoS execution budget.';
+            break;
+          }
           if (m[0].length === 0) {
             customRegex.lastIndex += 1;
             continue;

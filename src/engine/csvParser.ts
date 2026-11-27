@@ -9,10 +9,11 @@ export interface ParsedCsv {
 }
 
 /**
- * Parses all CSV records cleanly per RFC-4180 (stripping UTF-8 BOM, detecting unclosed quotes, no silent row truncation).
+ * Parses all CSV records strictly per RFC-4180 while preserving cell whitespace
+ * (strips UTF-8 BOM + trailing line endings only, validates quotes & column parity).
  */
-export function parseCsvRows(input: string): ParsedCsv {
-  const cleaned = input.replace(/^\uFEFF/, '').trim();
+export function parseCsvRows(input: string, expectCsv = false): ParsedCsv {
+  const cleaned = input.replace(/^\uFEFF/, '').replace(/(?:\r\n|\n|\r)+$/, '');
   if (!cleaned) {
     return { headers: [], rows: [], isTabular: false, parseError: null };
   }
@@ -21,6 +22,8 @@ export function parseCsvRows(input: string): ParsedCsv {
   let row: string[] = [];
   let cell = '';
   let inQuotes = false;
+  let justClosedQuote = false;
+  let quoteError: string | null = null;
 
   for (let i = 0; i < cleaned.length; i++) {
     const ch = cleaned[i];
@@ -32,11 +35,54 @@ export function parseCsvRows(input: string): ParsedCsv {
         i += 1;
       } else if (ch === '"') {
         inQuotes = false;
+        justClosedQuote = true;
       } else {
         cell += ch;
       }
-    } else if (ch === '"') {
-      inQuotes = true;
+      continue;
+    }
+
+    if (justClosedQuote) {
+      if (ch === ',') {
+        justClosedQuote = false;
+        row.push(cell);
+        cell = '';
+        continue;
+      }
+      if (ch === '\r' && next === '\n') {
+        justClosedQuote = false;
+        row.push(cell);
+        lines.push(row);
+        row = [];
+        cell = '';
+        i += 1;
+        continue;
+      }
+      if (ch === '\n' || ch === '\r') {
+        justClosedQuote = false;
+        row.push(cell);
+        lines.push(row);
+        row = [];
+        cell = '';
+        continue;
+      }
+      if (!quoteError) {
+        quoteError = `Malformed CSV: unexpected character "${ch}" after closing quote on row ${lines.length + 1}.`;
+      }
+      justClosedQuote = false;
+      cell += ch;
+      continue;
+    }
+
+    if (ch === '"') {
+      if (cell.length > 0) {
+        if (!quoteError) {
+          quoteError = `Malformed CSV: unexpected unescaped quote inside unquoted field on row ${lines.length + 1}.`;
+        }
+        cell += ch;
+      } else {
+        inQuotes = true;
+      }
     } else if (ch === ',') {
       row.push(cell);
       cell = '';
@@ -57,7 +103,10 @@ export function parseCsvRows(input: string): ParsedCsv {
   }
 
   if (inQuotes) {
-    return { headers: [], rows: [], isTabular: false, parseError: 'Malformed CSV: unclosed quote detected.' };
+    if (expectCsv || (lines.length > 0 && lines[0].length >= 2)) {
+      return { headers: [], rows: [], isTabular: false, parseError: 'Malformed CSV: unclosed quote detected.' };
+    }
+    return { headers: [], rows: [], isTabular: false, parseError: null };
   }
 
   if (cell.length > 0 || row.length > 0) {
@@ -66,13 +115,31 @@ export function parseCsvRows(input: string): ParsedCsv {
   }
 
   if (lines.length < 2) {
+    if (expectCsv && quoteError) {
+      return { headers: [], rows: [], isTabular: false, parseError: quoteError };
+    }
     return { headers: [], rows: [], isTabular: false, parseError: null };
   }
 
   const colCount = lines[0].length;
-  const consistent = colCount >= 2 && lines.every((r) => r.length === colCount);
-  if (!consistent) {
-    return { headers: [], rows: [], isTabular: false, parseError: null };
+  if (colCount < 2) {
+    return { headers: [], rows: [], isTabular: false, parseError: expectCsv && quoteError ? quoteError : null };
+  }
+
+  if (quoteError && (expectCsv || colCount >= 2)) {
+    return { headers: [], rows: [], isTabular: false, parseError: quoteError };
+  }
+
+  const badRowIdx = lines.findIndex((r) => r.length !== colCount);
+  if (badRowIdx !== -1) {
+    return {
+      headers: [],
+      rows: [],
+      isTabular: false,
+      parseError: expectCsv
+        ? `Malformed CSV: row ${badRowIdx + 1} has ${lines[badRowIdx].length} columns (expected ${colCount}).`
+        : null,
+    };
   }
 
   return {

@@ -82,21 +82,41 @@ describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
     });
     expect(invalidCustom.customRuleError).toBeTruthy();
 
-    const redosCustom = scanTextForPii('aaaaaaaaaaaaaaaaaaaaaaaa!', {
-      ...DEFAULT_DETECTION_OPTIONS,
-      customRule: { enabled: true, label: 'REDOS', pattern: '(a+)+' },
-    });
-    expect(redosCustom.customRuleError).toContain('ReDoS');
+    const redosPatterns = ['(a+)+', '((?:a)+)*', '(?:[a-z]+\\s?)+', '(a+){2,}', '(a|aa)+', '.*.*', '(\\w+)\\1', '(?=a)a+'];
+    for (const pat of redosPatterns) {
+      const blocked = scanTextForPii('aaaaaaaaaaaaaaaaaaaaaaaa!', {
+        ...DEFAULT_DETECTION_OPTIONS,
+        customRule: { enabled: true, label: 'REDOS', pattern: pat },
+      });
+      expect(blocked.customRuleError).toMatch(/ReDoS/i);
+    }
   });
 
-  it('detects context-guarded lowercase PAN, toll-free 1800 numbers, international phones, UPI, and atomic IPv6', () => {
+  it('enforces strict UIDAI Verhoeff Aadhaar by default and consistent PAN holder-type / context rules', () => {
     const sample =
-      'PANs: pan awfpd4412m and ABCDE9876K | decoys: order2024a | UPI: priya@okaxis | IP: ::ffff:192.0.2.1 | Toll-free: 1800-419-0155 | UK: +44 20 7946 0958 | IN: +91 98765 43210';
+      'PANs: pan awfpd4412m, ABCPK9876K | decoys: order2024a ORDER2024A TOKEN1234X | Aadhaar: 2341 5678 9120 bad: 2341 5678 9121 | UPI: priya@okaxis | IP: ::ffff:192.0.2.1 | Toll-free: 1800-419-0155 | UK: +44 20 7946 0958 | IN: +91 98765 43210';
     const scan = scanTextForPii(sample);
     expect(scan.counts.PAN).toBe(2);
+    expect(scan.counts.AADHAAR).toBe(1);
+    expect(scan.entities.find((e) => e.category === 'AADHAAR')?.value).toBe('2341 5678 9120');
     expect(scan.counts.UPI_ID).toBe(1);
     expect(scan.counts.IP_ADDRESS).toBe(1);
     expect(scan.counts.PHONE).toBe(3);
+  });
+
+  it('preserves CSV cell whitespace and reports malformed quotes and mismatched columns', () => {
+    const padded = parseCsvRows('  header_a , header_b \n"  alice  ",  alice@corp.in  \n');
+    expect(padded.isTabular).toBe(true);
+    expect(padded.headers[0]).toBe('  header_a ');
+    expect(padded.rows[0][0]).toBe('  alice  ');
+
+    const badColumns = parseCsvRows('a,b,c\n1,2\n', true);
+    expect(badColumns.isTabular).toBe(false);
+    expect(badColumns.parseError).toContain('row 2 has 2 columns');
+
+    const badQuote = parseCsvRows('a,b\n"x"oops,2\n', true);
+    expect(badQuote.isTabular).toBe(false);
+    expect(badQuote.parseError).toContain('unexpected character');
   });
 
   it('masks variable-length credit cards including 15-digit Amex cleanly', () => {
