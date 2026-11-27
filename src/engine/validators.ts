@@ -230,54 +230,68 @@ export function splitPhoneExtension(raw: string): { core: string; extension: str
   return { core: raw.trim(), extension: null };
 }
 
+const MAX_PHONE_CACHE = 512;
+const phoneValidationCache = new Map<string, ValidatedPhone | null>();
+
 /**
- * Validates phone numbers using Google's libphonenumber (with toll-free fallback).
+ * Validates phone numbers using Google's libphonenumber (with bounded memoization & toll-free fallback).
  */
 export function validatePhoneWithGoogleLib(rawValue: string): ValidatedPhone | null {
+  const cached = phoneValidationCache.get(rawValue);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   const { core, extension } = splitPhoneExtension(rawValue);
   const digitsOnly = core.replace(/\D/g, '');
+  let result: ValidatedPhone | null = null;
 
   // Toll-free numbers (1800-XXX-XXXX / 1-800-XXX-XXXX)
   if (/^(?:1800|1[-.\s]?800)/.test(core) && (digitsOnly.length === 10 || digitsOnly.length === 11)) {
-    return {
+    result = {
       e164: `+${digitsOnly}`,
       coreText: core,
       extension,
       metadata: 'Toll-Free Number',
       validatedBy: 'FORMAT',
     };
-  }
-
-  const regionsToTry = core.startsWith('+') ? [undefined] : ['IN', 'US', 'GB'];
-  for (const region of regionsToTry) {
-    try {
-      const parsed = phoneUtil.parse(core, region);
-      if (phoneUtil.isValidNumber(parsed)) {
-        const e164 = phoneUtil.format(parsed, PhoneNumberFormat.E164);
-        const rc = phoneUtil.getRegionCodeForNumber(parsed) || 'INTL';
-        return {
-          e164,
-          coreText: core,
-          extension,
-          metadata: `${rc} Phone (Google libphonenumber)`,
-          validatedBy: 'LIBPHONENUMBER',
-        };
+  } else {
+    const regionsToTry = core.startsWith('+') ? [undefined] : ['IN', 'US', 'GB'];
+    for (const region of regionsToTry) {
+      try {
+        const parsed = phoneUtil.parse(core, region);
+        if (phoneUtil.isValidNumber(parsed)) {
+          const e164 = phoneUtil.format(parsed, PhoneNumberFormat.E164);
+          const rc = phoneUtil.getRegionCodeForNumber(parsed) || 'INTL';
+          result = {
+            e164,
+            coreText: core,
+            extension,
+            metadata: `${rc} Phone (Google libphonenumber)`,
+            validatedBy: 'LIBPHONENUMBER',
+          };
+          break;
+        }
+      } catch {
+        // Try next region
       }
-    } catch {
-      // Try next region
+    }
+
+    // Indian STD landline fallback (e.g. 080-45678900, 020-25678901)
+    if (!result && /^0[1-9]\d{1,3}[\s.-]?\d{6,8}$/.test(core) && digitsOnly.length >= 10 && digitsOnly.length <= 11) {
+      result = {
+        e164: `+91${digitsOnly.replace(/^0/, '')}`,
+        coreText: core,
+        extension,
+        metadata: 'IN STD Landline',
+        validatedBy: 'FORMAT',
+      };
     }
   }
 
-  // Indian STD landline fallback (e.g. 080-45678900, 020-25678901)
-  if (/^0[1-9]\d{1,3}[\s.-]?\d{6,8}$/.test(core) && digitsOnly.length >= 10 && digitsOnly.length <= 11) {
-    return {
-      e164: `+91${digitsOnly.replace(/^0/, '')}`,
-      coreText: core,
-      extension,
-      metadata: 'IN STD Landline',
-      validatedBy: 'FORMAT',
-    };
+  if (phoneValidationCache.size >= MAX_PHONE_CACHE) {
+    phoneValidationCache.clear();
   }
-
-  return null;
+  phoneValidationCache.set(rawValue, result);
+  return result;
 }

@@ -140,7 +140,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const content = await fs.promises.readFile(filePath);
 
-    if (COMPRESSIBLE_EXTS.has(ext) && content.length > 1024) {
+    if (COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
       if (acceptEnc.includes('br') && !acceptEnc.includes('br;q=0')) {
         const compressed = await getCompressedBody(filePath, content, 'br');
         res.writeHead(200, {
