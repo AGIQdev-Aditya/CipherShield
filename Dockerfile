@@ -5,11 +5,11 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --no-audit --no-fund
 
-COPY tsconfig.json vite.config.ts index.html ./
+COPY tsconfig.json vite.config.ts eslint.config.js index.html ./
 COPY src ./src
 COPY tests ./tests
 
-RUN npm test && npm run build
+RUN npm run lint && npm test && npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app

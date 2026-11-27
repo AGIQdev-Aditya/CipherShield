@@ -12,34 +12,36 @@
 
 **Key Design Decisions:**
 - Enforced strict React text-node rendering (`<span>` slices) instead of `innerHTML` or `dangerouslySetInnerHTML` so pasted logs containing malicious `<script>` payloads render harmlessly as literal strings.
-- Built a Node.js production static server (`server.js`) with explicit security headers (`Content-Security-Policy` with `connect-src 'self'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`).
+- Built a zero-dependency Node.js production static server (`server.js`) with explicit security headers (`Content-Security-Policy` with `connect-src 'self'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`).
 
 ---
 
 ## Prompt 2 — Deterministic Scanner & Interval Conflict Resolution
 **Prompt Objective:**
-> Write a modular PII scanning engine in `src/engine/validators.ts` and `src/engine/scanner.ts` using ReDoS-safe regular expressions, strict IPv4/IPv6 validation, Luhn Mod-10 filtering (with tracking of rejected non-Luhn numbers), UIDAI Verhoeff checksum support, and non-overlapping interval prioritization.
+> Write a modular PII scanning engine in `src/engine/validators.ts` and `src/engine/scanner.ts` using ReDoS-safe regular expressions, strict IPv4/IPv6 validation, Luhn Mod-10 filtering (tracking rejected non-Luhn numbers), UIDAI Verhoeff checksum support, allowlisting, user-defined custom regex rules, and non-overlapping interval prioritization.
 
 **Refinements Applied:**
-- Prevented 16-digit credit card numbers from partially matching 10-digit phone or 12-digit Aadhaar patterns by resolving intervals using category priority (`CREDIT_CARD > EMAIL > IP_ADDRESS > AADHAAR > PAN > PHONE`).
-- Excluded timestamps (`10:24:19`) from IPv6 matching via strict hex-group and double-colon validation (`isValidIPv6`).
-- Blocked trivial all-zero `0000-0000-0000-0000` Luhn Mod-10 bypasses.
+- Fixed sentence-trailing IPv4 boundary lookahead (`(?!\d|\.\d)`) so IPs ending a sentence (`172.16.8.14.`) match accurately without matching invalid 5-octet strings.
+- Prevented 16-digit credit card numbers from partially matching 10-digit phone or 12-digit Aadhaar patterns via priority interval sweeps (`CREDIT_CARD > EMAIL > IP_ADDRESS > AADHAAR > PAN > PHONE > CUSTOM`).
+- Excluded timestamps (`10:24:19`) from IPv6 matching via strict hex-group validation (`isValidIPv6`) and blocked trivial all-zero `0000-0000-0000-0000` Luhn bypasses.
 
 ---
 
-## Prompt 3 — Multi-Mode Redaction & Consistent Pseudonymization
+## Prompt 3 — Multi-Mode Redaction, CSV Diff & SHA-256 Audit Compliance
 **Prompt Objective:**
-> Implement `redactText()` in `src/engine/redactor.ts` supporting Full Mask (`[REDACTED]`), Partial Mask (`XXXX-XXXX-XXXX-0366`, `a***@corp.in`, `+91 XXXXXX3210`), and Consistent Pseudonymization (`USER_01`, `PHONE_01`), normalizing email casing and phone country prefixes so duplicates receive identical tokens across the entire document and CSV rows.
+> Implement `redactText()` (`src/engine/redactor.ts`), RFC-4180 CSV parser (`src/engine/csvParser.ts`), offline Luhn-valid synthetic chaos generator (`src/engine/samples.ts`), Privacy Exposure Risk scoring, and Web Crypto SHA-256 Audit JSON export mapped to Google Cloud DLP InfoTypes.
 
 **Verification:**
-- Verified normalization handles `aarav@corp.in` vs `AARAV@CORP.IN` and `+91 98765 43210` vs `9876543210`.
+- Verified normalized pseudonymization maps `aarav@corp.in` vs `AARAV.KULKARNI@FINTECH-CORP.IN` and `+91 98765 43210` vs `9876543210` identically (`USER_01`, `PHONE_01`).
+- Verified quoted CSV rows preserve structure and support side-by-side cell diff inspection.
 
 ---
 
-## Prompt 4 — Accessibility, UI Workbench & Cloud Run Packaging
+## Prompt 4 — Accessibility, Automated Testing & Cloud Run Packaging
 **Prompt Objective:**
-> Build an accessible side-by-side diff UI (`src/App.tsx`, `src/index.css`) with skip links, semantic HTML5 landmarks, keyboard-navigable `role="tablist"`, high-contrast light/dark color-scheme tokens, 1-click sample loaders, `.txt`/`.csv` upload/download, Vitest unit tests, and a multi-stage `Dockerfile` for Google Cloud Run (`PORT=8080`).
+> Harden UI against WCAG AA accessibility standards (`eslint-plugin-jsx-a11y`, semantic landmarks, `<dialog>.showModal()`, keyboard `tablist`, `prefers-color-scheme` dark/light tokens), verify `100 KB` scanning under `150ms` in Vitest, and prepare multi-stage `Dockerfile` + `cloudbuild.yaml` for Google Cloud Run (`PORT=8080`).
 
 **Verification Results:**
-- Executed `npm test` (`vitest run`) covering Luhn rejection, IPv4/IPv6 boundaries, overlap priority, CSV integrity, and all 3 redaction modes.
-- Verified TypeScript strict compilation (`tsc --noEmit`), Vite production build (`npm run build`), and HTTP headers via local server check.
+- Passed `npm run lint` (`eslint .` with zero errors/warnings across TypeScript and `jsx-a11y`).
+- Passed `npm test` (13 Vitest unit & performance tests).
+- Verified `npm run build`, live HTTP security headers, and headless Chromium render.

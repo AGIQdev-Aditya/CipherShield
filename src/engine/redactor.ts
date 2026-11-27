@@ -16,6 +16,17 @@ const PSEUDONYM_PREFIX: Record<PiiCategory, string> = {
   PAN: 'PAN',
   AADHAAR: 'AADHAAR',
   CREDIT_CARD: 'CARD',
+  CUSTOM: 'CUSTOM',
+};
+
+export const GOOGLE_DLP_INFOTYPE_MAP: Record<PiiCategory, string> = {
+  EMAIL: 'EMAIL_ADDRESS',
+  PHONE: 'PHONE_NUMBER',
+  IP_ADDRESS: 'IP_ADDRESS',
+  PAN: 'INDIA_PAN_INDIVIDUAL',
+  AADHAAR: 'INDIA_AADHAAR_INDIVIDUAL',
+  CREDIT_CARD: 'CREDIT_CARD_NUMBER',
+  CUSTOM: 'CUSTOM_REGEX_ENTITY',
 };
 
 function partialMaskValue(entity: PiiEntity): string {
@@ -53,9 +64,8 @@ function partialMaskValue(entity: PiiEntity): string {
       return `XXXXXX${last4}`;
     }
 
-    case 'PAN': {
+    case 'PAN':
       return `${value.slice(0, 2)}XXX${value.slice(5, 9)}X`;
-    }
 
     case 'IP_ADDRESS': {
       if (value.includes(':')) {
@@ -65,6 +75,9 @@ function partialMaskValue(entity: PiiEntity): string {
       const octets = value.split('.');
       return `${octets[0]}.${octets[1]}.XXX.XXX`;
     }
+
+    case 'CUSTOM':
+      return value.length > 3 ? `${value.slice(0, 2)}***${value.slice(-1)}` : '***';
   }
 }
 
@@ -77,7 +90,7 @@ function fullMaskValue(entity: PiiEntity, template: 'generic' | 'typed'): string
 
 /**
  * Redacts detected PII entities in a single deterministic pass and builds
- * synchronized side-by-side diff segments without modifying DOM directly.
+ * synchronized side-by-side diff segments without writing raw HTML.
  */
 export function redactText(
   text: string,
@@ -94,6 +107,7 @@ export function redactText(
     PAN: 0,
     AADHAAR: 0,
     CREDIT_CARD: 0,
+    CUSTOM: 0,
   };
 
   const tokenLedger = new Map<string, PseudonymMapping>();
@@ -116,8 +130,13 @@ export function redactText(
     if (!existingMapping) {
       categoryCounters[entity.category] += 1;
       const serial = String(categoryCounters[entity.category]).padStart(2, '0');
+      const customPrefix =
+        entity.category === 'CUSTOM' && options.customRule.label.trim()
+          ? options.customRule.label.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+          : PSEUDONYM_PREFIX[entity.category];
+
       existingMapping = {
-        token: `${PSEUDONYM_PREFIX[entity.category]}_${serial}`,
+        token: `${customPrefix}_${serial}`,
         category: entity.category,
         normalizedKey: entity.normalizedKey,
         sampleValue: entity.value,
@@ -156,4 +175,15 @@ export function redactText(
     mappings: Array.from(tokenLedger.values()),
     scan,
   };
+}
+
+/**
+ * Computes a SHA-256 hex digest using the browser Web Crypto API for tamper-evident audit logs.
+ */
+export async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
