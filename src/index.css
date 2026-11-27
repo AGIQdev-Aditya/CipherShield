@@ -900,3 +900,273 @@ dialog.prompt-dialog::backdrop {
   align-items: flex-start;
   gap: 8px;
 }
+
+/* Top Telemetry Strip */
+.mc-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 960px) {
+  .mc-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.mc-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-top: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mc-cyan { border-top-color: var(--accent); }
+.mc-red { border-top-color: #dc2626; }
+.mc-green { border-top-color: var(--safe); }
+.mc-amber { border-top-color: var(--warn); }
+.mc-violet { border-top-color: #7c3aed; }
+
+.mc-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.mc-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.mc-unit {
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.mc-sub {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+/* Live Zero-Egress Proof Bar */
+.proof-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 9px 14px;
+  margin-bottom: 14px;
+  font-size: 0.85rem;
+}
+
+.proof-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--safe);
+  flex-shrink: 0;
+}
+
+.proof-dot.is-hot {
+  background: #dc2626;
+}
+
+.proof-toggle {
+  margin-left: auto;
+}
+
+.proof-log {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  font-size: 0.82rem;
+}
+
+.proof-empty {
+  margin: 0;
+}
+
+.proof-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.proof-events li {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.log-optin {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.log-unexpected {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.log-url {
+  overflow-wrap: anywhere;
+}
+
+/* Bottom Tabbed Drawer */
+.wb-drawer {
+  margin-top: 16px;
+}
+
+.drawer-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.drawer-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.drawer-tab[aria-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.drawer-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.drawer-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.st-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.st-actions {
+  align-items: center;
+}
+
+.st-score {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.st-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.st-case {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+}
+
+.st-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.86rem;
+  margin-bottom: 4px;
+}
+
+.st-badge {
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.st-badge.pass {
+  background: color-mix(in srgb, var(--safe) 18%, transparent);
+  color: var(--safe);
+}
+
+.st-badge.fail {
+  background: color-mix(in srgb, #dc2626 18%, transparent);
+  color: #dc2626;
+}
+
+.st-detail {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Keyboard Hints & Undo Toast */
+.kbd-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: center;
+  margin: 16px 0 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.kbd-hints kbd {
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  font-size: 0.85rem;
+}

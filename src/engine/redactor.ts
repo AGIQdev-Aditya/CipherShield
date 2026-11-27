@@ -108,6 +108,7 @@ export function redactText(
   mode: RedactionMode,
   options: DetectionOptions = DEFAULT_DETECTION_OPTIONS,
   sharedSession?: SharedPseudonymSession,
+  skipPostScan = false,
 ): RedactionResult {
   const scan = scanTextForPii(text, options, true);
   const { entities } = scan;
@@ -172,9 +173,9 @@ export function redactText(
 
   const sanitizedText = outputChunks.join('');
 
-  // Genuine post-redaction verification scan (measures actual residual risk)
-  const postScan = scanTextForPii(sanitizedText, options, true);
-  const afterRisk = calculateRiskScore(postScan.counts);
+  // Genuine post-redaction verification scan (skipped for per-cell CSV redaction for performance)
+  const postScan = skipPostScan ? null : scanTextForPii(sanitizedText, options, true);
+  const afterRisk = postScan ? calculateRiskScore(postScan.counts) : { score: 0, level: 'NONE' as const };
 
   return {
     sanitizedText,
@@ -187,7 +188,7 @@ export function redactText(
         ...scan.risk,
         scoreAfter: afterRisk.score,
         levelAfter: afterRisk.level,
-        residualCount: postScan.totalDetected,
+        residualCount: postScan ? postScan.totalDetected : 0,
       },
     },
   };

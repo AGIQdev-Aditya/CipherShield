@@ -1,8 +1,7 @@
 import { useId, useState } from 'react';
-import { CheckCircle2, EyeOff, FlaskConical, KeyRound, Lock, RotateCcw, Unlock, XCircle } from 'lucide-react';
+import { EyeOff, KeyRound, Lock, RotateCcw, Unlock } from 'lucide-react';
 import { decryptPseudonymLedger, EncryptedVaultBundle, encryptPseudonymLedger } from '../engine/cryptoVault';
 import { CATEGORY_META, GOOGLE_DLP_INFOTYPE_MAP } from '../engine/dlpTaxonomy';
-import { runAdversarialSelfTest, SelfTestReport } from '../engine/selfTest';
 import { DiffSegment, PseudonymMapping, RejectedCandidate } from '../types/pii';
 
 interface AuditLedgerProps {
@@ -17,7 +16,7 @@ interface AuditLedgerProps {
 
 /**
  * Interactive detected-entity override inspector, Cloud DLP taxonomy ledger,
- * Luhn rejections log, AES-256-GCM vault (PBKDF2 600k), and live adversarial self-test proof.
+ * Luhn rejections log, and AES-256-GCM vault (PBKDF2 600k + AAD).
  */
 export function AuditLedger({
   segments,
@@ -31,7 +30,6 @@ export function AuditLedger({
   const [passphrase, setPassphrase] = useState('');
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [decryptedRows, setDecryptedRows] = useState<PseudonymMapping[] | null>(null);
-  const [selfTestReport, setSelfTestReport] = useState<SelfTestReport | null>(null);
   const passId = useId();
   const keyFileId = useId();
 
@@ -68,24 +66,14 @@ export function AuditLedger({
 
   return (
     <section className="panel" aria-labelledby="audit-ledger-heading">
-      <div className="diff-card-header entity-review-header">
-        <div>
-          <h2 id="audit-ledger-heading" className="section-heading">
-            4. Entity Change Review, Cloud DLP Audit &amp; AES-256-GCM Vault
-          </h2>
-          <p className="panel-subtitle">
-            Inspect every detected value before exporting and click <strong>Keep Original</strong> on any false
-            positive or approved exception to exclude it immediately.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => setSelfTestReport(runAdversarialSelfTest())}
-        >
-          <FlaskConical size={15} aria-hidden="true" />
-          Run 10-Case Adversarial Self-Test
-        </button>
+      <div className="entity-review-header">
+        <h2 id="audit-ledger-heading" className="section-heading">
+          4. Entity Change Review, Cloud DLP Audit &amp; AES-256-GCM Vault
+        </h2>
+        <p className="panel-subtitle">
+          Inspect every detected value before exporting and click <strong>Keep Original</strong> on any false
+          positive or approved exception to exclude it immediately.
+        </p>
       </div>
 
       {/* Interactive Detected Entities Inspector */}
@@ -201,33 +189,6 @@ export function AuditLedger({
           </tbody>
         </table>
       </div>
-
-      {/* Adversarial Self-Test Proof Results */}
-      {selfTestReport && (
-        <div className="selftest-box" aria-live="polite">
-          <div className="vault-head">
-            <CheckCircle2 size={17} aria-hidden="true" className="safe-ink" />
-            <strong>
-              Live Adversarial Proof: {selfTestReport.passed}/{selfTestReport.total} Passed ({selfTestReport.durationMs}{' '}
-              ms)
-            </strong>
-          </div>
-          <ul className="selftest-list">
-            {selfTestReport.cases.map((tc) => (
-              <li key={tc.id} className={tc.passed ? 'selftest-pass' : 'selftest-fail'}>
-                {tc.passed ? (
-                  <CheckCircle2 size={14} aria-hidden="true" className="safe-ink" />
-                ) : (
-                  <XCircle size={14} aria-hidden="true" className="warn-ink" />
-                )}
-                <span>
-                  <strong>{tc.title}</strong> — <span className="mono">{tc.detail}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       {/* Reversible AES-256-GCM Encrypted Key Vault */}
       <div className="vault-box">

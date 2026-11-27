@@ -72,16 +72,27 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('192.168.42.108');
   });
 
-  it('lets users inspect detected items, click Keep Original to unredact selectively, and run adversarial self-tests', async () => {
+  it('lets users inspect detected items, keep/undo originals, toggle network proof log, run self-tests, and generate offline briefs', async () => {
     render(<App />);
+
+    // Toggle expandable Zero-Egress network proof log
+    fireEvent.click(screen.getByRole('button', { name: /Inspect network log/i }));
+    expect(screen.getByRole('region', { name: /Intercepted network events/i })).toBeTruthy();
+
+    // Keep Original item & verify Undo toast appears
     const keepButtons = screen.getAllByRole('button', { name: /Keep Original/i });
     expect(keepButtons.length).toBeGreaterThan(0);
     fireEvent.click(keepButtons[0]);
     expect(screen.getByLabelText('Kept / Allowlisted items').textContent).toContain('aarav.kulkarni@fintech-corp.in');
+    expect(screen.getByRole('status').textContent).toContain('aarav.kulkarni@fintech-corp.in');
 
+    // Switch drawer to Self-Test Proof & execute 10 probes
+    fireEvent.click(screen.getByRole('tab', { name: /Adversarial Self-Test Proof/i }));
     fireEvent.click(screen.getByRole('button', { name: /Run 10-Case Adversarial Self-Test/i }));
     expect(await screen.findByText(/Live Adversarial Proof: 10\/10 Passed/i)).toBeTruthy();
 
+    // Switch drawer to Compliance Advisor & generate offline DPDP/PCI brief
+    fireEvent.click(screen.getByRole('tab', { name: /Compliance Advisor/i }));
     fireEvent.click(screen.getByRole('button', { name: /Generate Offline Compliance Brief/i }));
     expect(await screen.findByText(/PCI-DSS Req 3\.4/i)).toBeTruthy();
   });
