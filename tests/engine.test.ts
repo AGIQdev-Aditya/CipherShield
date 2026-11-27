@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isValidIPv4, isValidIPv6, isValidLuhn, isValidVerhoeff } from '../src/engine/validators';
 import { DEFAULT_DETECTION_OPTIONS, scanTextForPii } from '../src/engine/scanner';
 import { redactText } from '../src/engine/redactor';
+import { buildCloudDlpSummary } from '../src/engine/dlpTaxonomy';
 import { generateSyntheticChaosLog, SAMPLE_DATASETS } from '../src/engine/samples';
 import { parseCsvRows } from '../src/engine/csvParser';
 
@@ -32,6 +33,8 @@ describe('Luhn & Financial Validators', () => {
   });
 
   it('validates UIDAI Verhoeff checksums for Aadhaar', () => {
+    expect(isValidVerhoeff('234156789120')).toBe(true);
+    expect(isValidVerhoeff('2341 5678 9120')).toBe(true);
     expect(isValidVerhoeff('000000000000')).toBe(false);
     expect(isValidVerhoeff('123456789012')).toBe(false);
   });
@@ -74,6 +77,19 @@ describe('PII Scanner Precision, Allowlist & Custom Regex', () => {
       customRule: { enabled: true, label: 'BAD', pattern: '[unclosed(' },
     });
     expect(invalidCustom.customRuleError).toBeTruthy();
+
+    const redosCustom = scanTextForPii('aaaaaaaaaaaaaaaaaaaaaaaa!', {
+      ...DEFAULT_DETECTION_OPTIONS,
+      customRule: { enabled: true, label: 'REDOS', pattern: '(a+)+' },
+    });
+    expect(redosCustom.customRuleError).toContain('ReDoS');
+  });
+
+  it('maps detected counts to Google Cloud DLP InfoTypes cleanly', () => {
+    const scan = scanTextForPii(SAMPLE_DATASETS[0].content);
+    const dlp = buildCloudDlpSummary(scan.counts);
+    expect(dlp.some((entry) => entry.googleCloudDlpInfoType === 'CREDIT_CARD_NUMBER')).toBe(true);
+    expect(dlp.some((entry) => entry.googleCloudDlpInfoType === 'INDIA_AADHAAR_INDIVIDUAL')).toBe(true);
   });
 });
 

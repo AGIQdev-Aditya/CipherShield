@@ -19,16 +19,6 @@ const PSEUDONYM_PREFIX: Record<PiiCategory, string> = {
   CUSTOM: 'CUSTOM',
 };
 
-export const GOOGLE_DLP_INFOTYPE_MAP: Record<PiiCategory, string> = {
-  EMAIL: 'EMAIL_ADDRESS',
-  PHONE: 'PHONE_NUMBER',
-  IP_ADDRESS: 'IP_ADDRESS',
-  PAN: 'INDIA_PAN_INDIVIDUAL',
-  AADHAAR: 'INDIA_AADHAAR_INDIVIDUAL',
-  CREDIT_CARD: 'CREDIT_CARD_NUMBER',
-  CUSTOM: 'CUSTOM_REGEX_ENTITY',
-};
-
 function partialMaskValue(entity: PiiEntity): string {
   const { category, value } = entity;
 

@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { PiiCategory, ScanResult } from '../types/pii';
-import { GOOGLE_DLP_INFOTYPE_MAP } from '../engine/redactor';
+import { GOOGLE_DLP_INFOTYPE_MAP } from '../engine/dlpTaxonomy';
 
 /**
  * Optional Google Gemini Compliance Advisor.

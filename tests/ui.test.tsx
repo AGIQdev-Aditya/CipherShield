@@ -44,13 +44,31 @@ describe('CipherShield UI, Security & Accessibility', () => {
     expect(screen.getByText(/CSV Original vs. Sanitized Cell Comparison/i)).toBeTruthy();
   });
 
-  it('rejects unsupported file extensions with an accessible alert', async () => {
+  it('rejects unsupported file extensions and binary null-byte payloads with an accessible alert', async () => {
     const { container } = render(<App />);
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     const badFile = new File(['binary'], 'malware.exe', { type: 'application/octet-stream' });
     fireEvent.change(input, { target: { files: [badFile] } });
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Unsupported file type');
+
+    const binarySpoof = new File(['hello\u0000world'], 'fake.txt', { type: 'text/plain' });
+    fireEvent.change(input, { target: { files: [binarySpoof] } });
+    const binAlert = await screen.findByRole('alert');
+    expect(binAlert.textContent).toContain('Binary payload rejected');
+  });
+
+  it('toggles category filters and live allowlist exclusions', () => {
+    render(<App />);
+    const emailBtn = screen.getByRole('button', { name: /Emails/i });
+    expect(emailBtn.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(emailBtn);
+    expect(emailBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('aarav.kulkarni@fintech-corp.in');
+
+    const allowlistInput = screen.getByLabelText(/Allowlist \(Comma-separated/i);
+    fireEvent.change(allowlistInput, { target: { value: '127.0.0.1, 10.0.14.22' } });
+    expect(screen.getByLabelText('Sanitized output preview').textContent).toContain('10.0.14.22');
   });
 
   it('passes axe-core automated WCAG accessibility audit with zero violations', async () => {

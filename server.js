@@ -25,7 +25,7 @@ const SECURITY_HEADERS = {
   'Content-Security-Policy': [
     "default-src 'self'",
     "script-src 'self'",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "style-src 'self' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
     "connect-src 'self' https://generativelanguage.googleapis.com",
@@ -42,6 +42,8 @@ const SECURITY_HEADERS = {
 };
 
 const server = http.createServer((req, res) => {
+  req.setTimeout(10000);
+
   if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
     res.writeHead(405, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' });
     res.end('Method Not Allowed');
@@ -51,7 +53,11 @@ const server = http.createServer((req, res) => {
   const reqPath = req.url.split('?')[0];
 
   if (reqPath === '/healthz') {
-    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+    res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
     res.end(JSON.stringify({ status: 'ok', service: 'ciphershield', egress: 'client-side-redaction' }));
     return;
   }
@@ -72,7 +78,7 @@ const server = http.createServer((req, res) => {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
   const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
-  const acceptsGzip = (req.headers['accept-encoding'] || '').includes('gzip');
+  const acceptEnc = req.headers['accept-encoding'] || '';
 
   fs.readFile(filePath, (err, content) => {
     if (err) {
@@ -81,17 +87,32 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    if (acceptsGzip && COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
-      const zipped = zlib.gzipSync(content);
-      res.writeHead(200, {
-        ...SECURITY_HEADERS,
-        'Content-Type': contentType,
-        'Content-Encoding': 'gzip',
-        Vary: 'Accept-Encoding',
-        'Cache-Control': cacheControl,
-      });
-      res.end(req.method === 'HEAD' ? undefined : zipped);
-      return;
+    if (COMPRESSIBLE_EXTS.has(ext) && content.length > 512) {
+      if (acceptEnc.includes('br')) {
+        const compressed = zlib.brotliCompressSync(content);
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'Content-Type': contentType,
+          'Content-Encoding': 'br',
+          Vary: 'Accept-Encoding',
+          'Cache-Control': cacheControl,
+        });
+        res.end(req.method === 'HEAD' ? undefined : compressed);
+        return;
+      }
+
+      if (acceptEnc.includes('gzip')) {
+        const zipped = zlib.gzipSync(content);
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'Content-Type': contentType,
+          'Content-Encoding': 'gzip',
+          Vary: 'Accept-Encoding',
+          'Cache-Control': cacheControl,
+        });
+        res.end(req.method === 'HEAD' ? undefined : zipped);
+        return;
+      }
     }
 
     res.writeHead(200, {
@@ -105,4 +126,10 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   process.stdout.write(`CipherShield listening on http://0.0.0.0:${PORT}\n`);
+});
+
+process.on('SIGTERM', () => {
+  server.close(() => {
+    process.exit(0);
+  });
 });

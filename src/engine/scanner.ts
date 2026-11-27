@@ -249,28 +249,37 @@ export function scanTextForPii(text: string, options: DetectionOptions = DEFAULT
   }
 
   if (options.customRule.enabled && options.customRule.pattern.trim()) {
-    try {
-      const customRegex = new RegExp(options.customRule.pattern.trim(), 'g');
-      let m: RegExpExecArray | null;
-      let guard = 0;
-      while ((m = customRegex.exec(text)) !== null && guard < 2000) {
-        guard += 1;
-        if (m[0].length === 0) {
-          customRegex.lastIndex += 1;
-          continue;
+    const patternStr = options.customRule.pattern.trim();
+    // Guard against ReDoS-prone nested quantifiers and excessively long user patterns
+    const hasNestedQuantifier = /\([^)]*[+*][^)]*\)[+*]/.test(patternStr);
+    if (patternStr.length > 120) {
+      customRuleError = 'Custom RegExp exceeds 120-character safety limit.';
+    } else if (hasNestedQuantifier) {
+      customRuleError = 'Nested quantifier rejected to prevent catastrophic backtracking (ReDoS).';
+    } else {
+      try {
+        const customRegex = new RegExp(patternStr, 'g');
+        let m: RegExpExecArray | null;
+        let guard = 0;
+        while ((m = customRegex.exec(text)) !== null && guard < 2000) {
+          guard += 1;
+          if (m[0].length === 0) {
+            customRegex.lastIndex += 1;
+            continue;
+          }
+          rawMatches.push({
+            category: 'CUSTOM',
+            value: m[0],
+            normalizedKey: normalizeKey('CUSTOM', m[0]),
+            start: m.index,
+            end: m.index + m[0].length,
+            metadata: options.customRule.label.trim() || 'Custom Pattern',
+            validatedBy: 'CUSTOM',
+          });
         }
-        rawMatches.push({
-          category: 'CUSTOM',
-          value: m[0],
-          normalizedKey: normalizeKey('CUSTOM', m[0]),
-          start: m.index,
-          end: m.index + m[0].length,
-          metadata: options.customRule.label.trim() || 'Custom Pattern',
-          validatedBy: 'CUSTOM',
-        });
+      } catch {
+        customRuleError = 'Invalid custom RegExp syntax.';
       }
-    } catch {
-      customRuleError = 'Invalid custom RegExp syntax.';
     }
   }
 
