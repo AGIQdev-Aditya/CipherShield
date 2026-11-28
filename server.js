@@ -156,65 +156,83 @@ async function serveAssetResponse({
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 
+function decodeSafeRequestPath(rawUrl) {
+  try {
+    return decodeURIComponent((rawUrl.split('?')[0] ?? '/'));
+  } catch {
+    return null;
+  }
+}
+
+function logHttpRequestIfNeeded({ enableRequestLogs, decodedPath, method, statusCode, startedAt, traceId }) {
+  if (!enableRequestLogs || (decodedPath !== '/' && statusCode < 400)) return;
+  logCloudJson('INFO', 'HTTP request served', {
+    httpRequest: {
+      requestMethod: method,
+      requestUrl: decodedPath,
+      status: statusCode,
+      latency: `${((Date.now() - startedAt) / 1000).toFixed(3)}s`,
+    },
+    ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
+  });
+}
+
+async function handleIncomingRequest({ req, res, distDir, compressedCache, enableRequestLogs }) {
+  const startedAt = Date.now();
+  const traceHeader = req.headers['x-cloud-trace-context'];
+  const traceId = typeof traceHeader === 'string' ? traceHeader.split('/')[0] : undefined;
+
+  if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
+    sendText(res, 405, 'Method Not Allowed');
+    return;
+  }
+
+  const decodedPath = decodeSafeRequestPath(req.url);
+  if (decodedPath === null) {
+    sendText(res, 400, 'Bad Request');
+    return;
+  }
+  if (decodedPath === '/healthz') {
+    sendHealthz(res, req.method);
+    return;
+  }
+
+  const resolved = await resolveStaticFile(distDir, decodedPath);
+  if (resolved.status === 403 || !resolved.filePath) {
+    sendText(res, resolved.status === 403 ? 403 : 404, resolved.status === 403 ? 'Forbidden' : 'Not Found');
+    return;
+  }
+
+  try {
+    await serveAssetResponse({ req, res, resolvedFilePath: resolved.filePath, compressedCache });
+  } catch (err) {
+    if (enableRequestLogs) {
+      logCloudJson('ERROR', 'Static asset read failure', {
+        error: String(err),
+        ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
+      });
+    }
+    sendText(res, 500, 'Internal Server Error');
+  } finally {
+    logHttpRequestIfNeeded({
+      enableRequestLogs,
+      decodedPath,
+      method: req.method,
+      statusCode: res.statusCode,
+      startedAt,
+      traceId,
+    });
+  }
+}
+
 /**
  * Creates a stateless HTTP server serving prebuilt Vite assets for Cloud Run or Node production.
  */
 export function createAppServer({ distDir = DEFAULT_DIST_DIR, enableRequestLogs = true } = {}) {
   const compressedCache = new Map();
-
-  const server = http.createServer(async (req, res) => {
-    const startedAt = Date.now();
-    const traceHeader = req.headers['x-cloud-trace-context'];
-    const traceId = typeof traceHeader === 'string' ? traceHeader.split('/')[0] : undefined;
-
-    if (!req.url || (req.method !== 'GET' && req.method !== 'HEAD')) {
-      sendText(res, 405, 'Method Not Allowed');
-      return;
-    }
-
-    let decodedPath;
-    try {
-      decodedPath = decodeURIComponent(req.url.split('?')[0] ?? '/');
-    } catch {
-      sendText(res, 400, 'Bad Request');
-      return;
-    }
-
-    if (decodedPath === '/healthz') {
-      sendHealthz(res, req.method);
-      return;
-    }
-
-    const resolved = await resolveStaticFile(distDir, decodedPath);
-    if (resolved.status === 403 || !resolved.filePath) {
-      sendText(res, resolved.status === 403 ? 403 : 404, resolved.status === 403 ? 'Forbidden' : 'Not Found');
-      return;
-    }
-
-    try {
-      await serveAssetResponse({ req, res, resolvedFilePath: resolved.filePath, compressedCache });
-    } catch (err) {
-      if (enableRequestLogs) {
-        logCloudJson('ERROR', 'Static asset read failure', {
-          error: String(err),
-          ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
-        });
-      }
-      sendText(res, 500, 'Internal Server Error');
-    } finally {
-      if (enableRequestLogs && (decodedPath === '/' || res.statusCode >= 400)) {
-        logCloudJson('INFO', 'HTTP request served', {
-          httpRequest: {
-            requestMethod: req.method,
-            requestUrl: decodedPath,
-            status: res.statusCode,
-            latency: `${((Date.now() - startedAt) / 1000).toFixed(3)}s`,
-          },
-          ...(traceId ? { 'logging.googleapis.com/trace': traceId } : {}),
-        });
-      }
-    }
-  });
+  const server = http.createServer((req, res) =>
+    handleIncomingRequest({ req, res, distDir, compressedCache, enableRequestLogs }),
+  );
 
   server.headersTimeout = 10_000;
   server.requestTimeout = 30_000;
